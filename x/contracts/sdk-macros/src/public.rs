@@ -45,12 +45,24 @@ pub fn impl_public(public_fn: PublicFn) -> Result<TokenStream, Error> {
                 fn set_call_result(ptr: *const u8, len: usize);
             }
 
+            #[cfg(target_arch = "wasm32")]
+            unsafe fn get_args_slice(ptr: wasmlanche::HostPtr) -> &'static [u8] {
+                let ptr = ptr as *const u8;
+                let len = *(ptr.offset(-4) as *const u32) as usize;
+                std::slice::from_raw_parts(ptr, len)
+            }
+
             #[no_mangle]
             unsafe extern "C-unwind" fn #name(args: wasmlanche::HostPtr) {
                 wasmlanche::register_panic();
 
                 let result = {
-                    let args: Args = wasmlanche::borsh::from_slice(&args).expect("error fetching serialized args");
+                    #[cfg(target_arch = "wasm32")]
+                    let args_slice = get_args_slice(args);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let args_slice = &args;
+
+                    let args: Args = wasmlanche::borsh::from_slice(args_slice).expect("error fetching serialized args");
 
                     let Args { mut ctx, #(#args_names),* } = args;
 
@@ -99,7 +111,7 @@ pub struct PublicFn {
 }
 
 impl Parse for PublicFn {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
+    fn parse(input: ParseStream) -> Result<Self, Error> {
         let input = ItemFn::parse(input)?;
 
         let ItemFn {
@@ -137,7 +149,7 @@ impl Parse for PublicFn {
 
         let other_inputs = map_other_inputs(inputs);
 
-        let (context_input, other_inputs) = match (context_input, other_inputs) {
+        let (_context_input, other_inputs) = match (context_input, other_inputs) {
             (Err(mut vis_and_first), Err(rest)) => {
                 vis_and_first.combine(rest);
                 Err(vis_and_first)
@@ -152,9 +164,7 @@ impl Parse for PublicFn {
             fn_token,
             ident: sig.ident,
             generics: sig.generics,
-            paren_token: sig.paren_token,
             user_defined_context_type,
-            context_input,
             other_inputs,
             output: sig.output,
         };
@@ -177,27 +187,23 @@ impl From<PublicFn> for ItemFn {
             block,
         } = public_fn;
 
-        let sig = sig.into();
-
         Self {
             attrs,
             vis,
-            sig,
+            sig: sig.into(),
             block,
         }
     }
 }
 
 #[derive(Clone)]
-struct PublicFnSignature {
-    ident: Ident,
-    generics: Generics,
-    fn_token: Token![fn],
-    paren_token: syn::token::Paren,
-    user_defined_context_type: Box<Type>,
-    context_input: ContextArg,
-    other_inputs: CommaSeparated<PatType>,
-    output: ReturnType,
+pub struct PublicFnSignature {
+    pub fn_token: Token![fn],
+    pub ident: Ident,
+    pub generics: Generics,
+    pub user_defined_context_type: Box<Type>,
+    pub other_inputs: CommaSeparated<PatType>,
+    pub output: ReturnType,
 }
 
 impl From<PublicFnSignature> for Signature {
@@ -206,16 +212,28 @@ impl From<PublicFnSignature> for Signature {
             fn_token,
             ident,
             generics,
-            paren_token,
-            user_defined_context_type: _,
-            context_input,
+            user_defined_context_type,
             other_inputs,
             output,
         } = value;
 
-        let inputs = std::iter::once(FnArg::from(context_input))
-            .chain(other_inputs.into_iter().map(FnArg::Typed))
-            .collect();
+        let mut inputs = CommaSeparated::new();
+        inputs.push(FnArg::Typed(PatType {
+            attrs: vec![],
+            pat: Box::new(Pat::Ident(PatIdent {
+                attrs: vec![],
+                by_ref: None,
+                mutability: None,
+                ident: format_ident!("context"),
+                subpat: None,
+            })),
+            colon_token: Token![:](Span::call_site()),
+            ty: user_defined_context_type,
+        }));
+
+        for input in other_inputs {
+            inputs.push(FnArg::Typed(input));
+        }
 
         Self {
             constness: None,
@@ -225,7 +243,7 @@ impl From<PublicFnSignature> for Signature {
             fn_token,
             ident,
             generics,
-            paren_token,
+            paren_token: syn::token::Paren(Span::call_site()),
             inputs,
             variadic: None,
             output,
@@ -234,183 +252,166 @@ impl From<PublicFnSignature> for Signature {
 }
 
 #[derive(Clone)]
-struct ContextArg {
-    pat: Box<Pat>,
-    ty: Box<Type>,
-    colon_token: Token![:],
+pub struct ContextArg {
+    pub attrs: Vec<syn::Attribute>,
+    pub pat: Box<Pat>,
+    pub colon_token: Token![:],
+    pub ty: Box<Type>,
 }
 
 impl From<ContextArg> for FnArg {
     fn from(value: ContextArg) -> Self {
-        let attrs = Vec::new();
         let ContextArg {
+            attrs,
             pat,
-            ty,
             colon_token,
+            ty,
         } = value;
 
         FnArg::Typed(PatType {
             attrs,
             pat,
-            ty,
             colon_token,
+            ty,
         })
     }
 }
 
 impl PublicFn {
     fn to_bindings_fn(&self) -> Result<ItemFn, Error> {
-        let Self {
-            attrs,
-            vis,
-            sig,
-            block: _,
-        } = self;
+        let sig = &self.sig;
 
-        let args = sig.other_inputs.iter().map(|PatType { pat, .. }| pat);
-        let name = sig.ident.to_string();
+        let name = &sig.ident;
+        let other_inputs = sig.other_inputs.iter().collect::<Vec<_>>();
+        let args_names = sig
+            .other_inputs
+            .iter()
+            .map(|PatType { pat: name, .. }| quote! {#name})
+            .collect::<Vec<_>>();
 
-        let block = Box::new(parse_quote! {{
-            let args = wasmlanche::borsh::to_vec(&(#(#args,)*)).expect("error serializing args");
-            ctx
-                .call_function(#name, &args)
-                .expect("calling the external contract failed")
-        }});
+        let context_type = type_from_reference(&sig.user_defined_context_type);
 
-        let ty = type_from_reference(&sig.user_defined_context_type);
+        let bindings_fn = quote! {
+            pub fn #name(
+                context: &mut wasmlanche::ExternalCallContext,
+                #(#other_inputs),*
+            ) -> Result<_, wasmlanche::ExternalCallError> {
+                let args = {
+                    #[derive(wasmlanche::borsh::BorshSerialize)]
+                    #[borsh(crate = "wasmlanche::borsh")]
+                    struct Args {
+                        ctx: #context_type,
+                        #(#other_inputs),*
+                    }
 
-        let ty = parse_quote!(wasmlanche::ExternalCallContext<'_, #ty>);
+                    Args {
+                        ctx: wasmlanche::Context::new(),
+                        #(#args_names),*
+                    }
+                };
 
-        let context_input = ContextArg {
-            pat: parse_quote! { ctx },
-            colon_token: self.sig.context_input.colon_token,
-            ty,
+                let result = context.execute_wasm(
+                    wasmlanche::borsh::to_vec(&args)?.as_slice(),
+                    stringify!(#name),
+                )?;
+
+                wasmlanche::borsh::from_slice(&result).map_err(Into::into)
+            }
         };
 
-        let sig = Signature::from(PublicFnSignature {
-            context_input,
-            ..sig.clone()
-        });
-
-        let item_fn = ItemFn {
-            attrs: attrs.clone(),
-            vis: vis.clone(),
-            sig,
-            block,
-        };
-
-        Ok(item_fn)
+        syn::parse2(bindings_fn)
     }
 }
 
-fn extract_context_arg<Iter>(
-    inputs: &mut Iter,
-    paren_span: Span,
-) -> (Box<Type>, Result<ContextArg, Error>)
+fn extract_context_arg<I>(inputs: &mut I, paren_span: Span) -> (Box<Type>, Result<ContextArg, Error>)
 where
-    Iter: Iterator<Item = FnArg>,
+    I: Iterator<Item = FnArg>,
 {
-    let mut user_defined_context_type: Box<Type> = Box::new(parse_str(CONTEXT_TYPE)).unwrap();
-
-    let first_arg = inputs.next();
-
-    let Some(first_arg) = first_arg else {
-        let err = Error::new(
-                    paren_span,
-                    format!("Functions with the `#[public]` attribute must have at least one parameter and the first parameter must be of type `{CONTEXT_TYPE}`"),
-                );
-
-        return (user_defined_context_type, Err(err));
+    let Some(context_arg) = inputs.next() else {
+        return (
+            Box::new(parse_str(CONTEXT_TYPE).unwrap()),
+            Err(Error::new(paren_span, "missing context argument")),
+        );
     };
 
-    let result = match first_arg {
-        FnArg::Typed(PatType {
-            mut ty,
-            pat,
-            colon_token,
-            ..
-        }) if is_mutable_context_ref(&ty) => {
-            let types = (user_defined_context_type.as_mut(), ty.as_mut());
-
-            if let (Type::Reference(context_type), Type::Reference(ty)) = types {
-                context_type.lifetime = ty.lifetime.clone();
-            }
-
-            // swap the fully qualified `Context` with the user-defined `Context`
-            // for better compiler errors
-            std::mem::swap(types.0, types.1);
-
-            Ok(ContextArg {
-                pat,
-                ty,
-                colon_token,
-            })
-        }
-
-        first_arg => {
-            let message = format!("The first paramter of a function with the `#[public]` attribute must be of type `{CONTEXT_TYPE}`");
-
-            let span = match first_arg {
-                FnArg::Typed(PatType { ty, .. }) => ty.span(),
-                _ => first_arg.span(),
-            };
-
-            Err(Error::new(span, message))
-        }
+    let FnArg::Typed(PatType { pat, ty, .. }) = context_arg else {
+        return (
+            Box::new(parse_str(CONTEXT_TYPE).unwrap()),
+            Err(Error::new(
+                context_arg.span(),
+                "self argument is not allowed in public functions",
+            )),
+        );
     };
 
-    (user_defined_context_type, result)
+    if !is_mutable_context_ref(&ty) {
+        return (
+            Box::new(parse_str(CONTEXT_TYPE).unwrap()),
+            Err(Error::new(
+                ty.span(),
+                "context argument must be a mutable reference to Context",
+            )),
+        );
+    }
+
+    (
+        ty.clone(),
+        Ok(ContextArg {
+            attrs: vec![],
+            pat: pat.clone(),
+            colon_token: Token![:](Span::call_site()),
+            ty: ty.clone(),
+        }),
+    )
 }
 
 fn map_other_inputs(inputs: impl Iterator<Item = FnArg>) -> Result<CommaSeparated<PatType>, Error> {
-    let other_inputs = inputs.enumerate().map(|(i, fn_arg)| match fn_arg {
-        FnArg::Receiver(_) => Err(Error::new(
-            fn_arg.span(),
-            "Functions with the `#[public]` attribute cannot have a `self` parameter.",
-        )),
-        FnArg::Typed(mut pat_type) => {
-            let pat = pat_type.pat;
-            pat_type.pat = match *pat {
-                // replace wildcards with generated identifiers
-                Pat::Wild(PatWild { attrs, .. }) => Pat::Ident(PatIdent {
-                    attrs,
-                    by_ref: None,
-                    mutability: None,
-                    ident: format_ident!("arg{}", i),
-                    subpat: None,
-                }),
-                pat => pat,
-            }
-            .into();
+    let mut other_inputs = CommaSeparated::new();
 
-            Ok(pat_type)
-        }
-    });
+    for input in inputs {
+        let FnArg::Typed(pat_type) = input else {
+            return Err(Error::new(
+                input.span(),
+                "self argument is not allowed in public functions",
+            ));
+        };
 
-    // this isn't the same thing as a `try_fold` because we don't exit early on an error
-    #[allow(clippy::manual_try_fold)]
-    other_inputs.fold(Ok(Punctuated::new()), |result, param| {
-        match (result, param) {
-            // ignore Ok or first error encountered
-            (Err(errors), Ok(_)) | (Ok(_), Err(errors)) => Err(errors),
-            // combine errors
-            (Err(mut errors), Err(e)) => {
-                errors.combine(e);
-                Err(errors)
+        let PatType { pat, ty, .. } = pat_type;
+
+        let pat_clone = pat.clone();
+        match &*pat {
+            Pat::Ident(PatIdent { mutability, .. }) => {
+                if mutability.is_some() {
+                    return Err(Error::new(
+                        mutability.span(),
+                        "mutable arguments are not allowed in public functions",
+                    ));
+                }
             }
-            // collect results
-            (Ok(mut names), Ok(name)) => {
-                names.push(name);
-                Ok(names)
+            Pat::Wild(_) => {}
+            _ => {
+                return Err(Error::new(
+                    pat.span(),
+                    "pattern matching is not allowed in public functions",
+                ));
             }
         }
-    })
+
+        other_inputs.push(PatType {
+            attrs: vec![],
+            pat: pat_clone,
+            colon_token: Token![:](Span::call_site()),
+            ty,
+        });
+    }
+
+    Ok(other_inputs)
 }
 
 /// Returns whether the type_path represents a mutable context ref type.
 fn is_mutable_context_ref(type_path: &Type) -> bool {
     let Type::Reference(TypeReference {
-        mutability: Some(mutability),
+        mutability: Some(_),
         elem,
         ..
     }) = type_path
@@ -418,32 +419,21 @@ fn is_mutable_context_ref(type_path: &Type) -> bool {
         return false;
     };
 
-    // span is ignored in the comparison
-    if mutability != &Token![mut](mutability.span()) {
+    let Type::Path(type_path) = &**elem else {
         return false;
-    }
+    };
 
-    if let Type::Path(type_path) = elem.as_ref() {
-        let context_path = parse_str::<TypeReference>(CONTEXT_TYPE).unwrap();
-        let Type::Path(context_path) = context_path.elem.as_ref() else {
-            return false;
-        };
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
 
-        let context_ident = context_path
-            .path
-            .segments
-            .last()
-            .map(|segment| &segment.ident);
-        type_path.path.segments.last().map(|segment| &segment.ident) == context_ident
-    } else {
-        false
-    }
+    segment.ident == "Context"
 }
 
 fn type_from_reference(type_path: &Type) -> &Type {
-    if let Type::Reference(TypeReference { elem, .. }) = type_path {
-        elem.as_ref()
-    } else {
-        type_path
-    }
+    let Type::Reference(TypeReference { elem, .. }) = type_path else {
+        unreachable!()
+    };
+
+    elem
 }

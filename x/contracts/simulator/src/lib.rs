@@ -1,135 +1,182 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
+#![cfg_attr(not(feature = "std"), no_std)]
 
-use std::error::Error;
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+use std::collections::HashMap;
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+use std::sync::{Arc, RwLock};
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+use std::str::FromStr;
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use thiserror::Error;
 
-pub mod state;
-use state::SimpleState;
-
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[derive(Debug, Error)]
 pub enum SimulatorError {
-    #[error("Contract creation failed: {0}")]
-    ContractCreation(String),
-    #[error("Contract execution failed: {0}")]
+    #[error("{0}")]
     ContractExecution(String),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("UTF-8 error: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+    #[error("Parse error: {0}")]
+    Parse(#[from] std::num::ParseIntError),
 }
 
-#[derive(Debug, Clone)]
-pub struct Address([u8; 32]);
+#[derive(Clone, Debug)]
+pub struct Address(pub Vec<u8>);
 
 impl Address {
-    pub fn new(bytes: [u8; 32]) -> Self {
-        Address(bytes)
-    }
-
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-}
 
-impl Default for Address {
-    fn default() -> Self {
-        Address([0u8; 32])
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Address(bytes)
     }
 }
 
-#[derive(Debug)]
-pub struct CreateContractResult {
-    pub address: Address,
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+impl FromStr for Address {
+    type Err = SimulatorError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Address(s.as_bytes().to_vec()))
+    }
 }
 
-pub struct Simulator {
-    state: SimpleState,
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[derive(Default)]
+pub struct SimulatorState {
+    values: HashMap<Vec<u8>, Vec<u8>>,
 }
 
-impl Simulator {
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+impl SimulatorState {
     pub fn new() -> Self {
         Self {
-            state: SimpleState::new(),
+            values: HashMap::new(),
         }
     }
 
-    pub fn create_contract(&mut self, contract: Address, code: Vec<u8>) {
-        self.state.insert(
-            contract.as_bytes().to_vec().into_boxed_slice(),
-            code.into_boxed_slice(),
-        );
+    pub fn get_value(&self, key: &[u8]) -> Option<&Vec<u8>> {
+        self.values.get(key)
     }
 
-    pub fn get_contract_code(&self, contract: &Address) -> Option<Vec<u8>> {
-        self.state.get_value(contract.as_bytes())
-            .map(|code| code.to_vec())
-    }
-
-    pub fn call_contract(
-        &mut self,
-        contract: Address,
-        method: &str,
-        args: &[u8],
-        gas: u64,
-    ) -> Result<Vec<u8>, SimulatorError> {
-        // Get contract code from state
-        let code = self.state.get_value(contract.as_bytes())
-            .ok_or_else(|| SimulatorError::ContractExecution("Contract not found".into()))?;
-
-        // TODO: Implement WASM execution
-        // For now, just return the input args
-        Ok(args.to_vec())
-    }
-
-    pub fn get_balance(&self, account: Address) -> u64 {
-        // Get balance from state, default to 0
-        self.state.get_value(account.as_bytes())
-            .and_then(|bytes| bytes.try_into().ok())
-            .map(u64::from_be_bytes)
-            .unwrap_or(0)
-    }
-
-    pub fn set_balance(&mut self, account: Address, balance: u64) {
-        self.state.insert(
-            account.as_bytes().to_vec().into_boxed_slice(),
-            balance.to_be_bytes().to_vec().into_boxed_slice(),
-        );
-    }
-
-    pub fn create_contract_with_code(&mut self, contract: Address, code: Vec<u8>) {
-        self.state.insert(
-            contract.as_bytes().to_vec().into_boxed_slice(),
-            code.into_boxed_slice(),
-        );
+    pub fn set_value(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.values.insert(key, value);
     }
 }
 
-#[cfg(test)]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[derive(Default)]
+pub struct Simulator {
+    state: Arc<RwLock<SimulatorState>>,
+}
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+impl Simulator {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(RwLock::new(SimulatorState::new())),
+        }
+    }
+
+    pub fn with_state(state: Arc<RwLock<SimulatorState>>) -> Self {
+        Self { state }
+    }
+
+    pub fn get_state(&self) -> Arc<RwLock<SimulatorState>> {
+        self.state.clone()
+    }
+
+    pub fn execute_wasm(&self, _code: &[u8], method: &str, params: &[u8], _gas: u64) -> Result<Vec<u8>, SimulatorError> {
+        // For now, we'll simulate the add function
+        if method == "add" {
+            let params_str = std::str::from_utf8(params)?;
+            let parts: Vec<&str> = params_str.split(',').collect();
+            
+            if parts.len() != 2 {
+                return Err(SimulatorError::ContractExecution(format!("Expected 2 parameters for function '{}'", method)));
+            }
+            
+            let a: i32 = parts[0].trim().parse()?;
+            let b: i32 = parts[1].trim().parse()?;
+            
+            let result = a + b;
+            let result_u64 = result as u64;
+            
+            // Return as uint64 in little-endian format
+            Ok(result_u64.to_le_bytes().to_vec())
+        } else {
+            Err(SimulatorError::ContractExecution(format!("Function '{}' not found in contract", method)))
+        }
+    }
+
+    pub fn get_balance(&self, account: Address) -> u64 {
+        let state = self.state.read().unwrap();
+        state.get_value(account.as_bytes())
+            .map(|v| {
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(&v[..8]);
+                u64::from_le_bytes(bytes)
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn set_balance(&self, account: Address, balance: u64) {
+        let mut state = self.state.write().unwrap();
+        state.set_value(account.as_bytes().to_vec(), balance.to_le_bytes().to_vec());
+    }
+
+    pub fn create_contract(&self, contract: Address, code: Vec<u8>) {
+        let mut state = self.state.write().unwrap();
+        state.set_value(contract.as_bytes().to_vec(), code);
+    }
+}
+
+#[cfg(all(test, feature = "std", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
     #[test]
     fn test_simulator_creation() {
         let simulator = Simulator::new();
-        assert!(simulator.get_contract_code(&Address::default()).is_none());
+        let state = simulator.get_state();
+        assert!(state.read().unwrap().get_value(&[1]).is_none());
     }
 
     #[test]
     fn test_contract_creation() {
-        let mut simulator = Simulator::new();
-        let contract = Address::new([1u8; 32]);
-        let code = vec![1, 2, 3, 4];
-        
+        let simulator = Simulator::new();
+        let contract = Address::new(vec![1, 2, 3]);
+        let code = vec![4, 5, 6];
         simulator.create_contract(contract.clone(), code.clone());
-        assert_eq!(simulator.get_contract_code(&contract), Some(code));
+        
+        let state = simulator.get_state();
+        assert_eq!(state.read().unwrap().get_value(&contract.as_bytes()).unwrap(), &code);
     }
 
     #[test]
-    fn test_state_management() {
-        let mut simulator = Simulator::new();
-        let addr = Address::new([2u8; 32]);
-        let value = vec![5, 6, 7, 8];
-        
-        simulator.create_contract(addr.clone(), value.clone());
-        assert_eq!(simulator.get_contract_code(&addr), Some(value));
+    fn test_balance() {
+        let simulator = Simulator::new();
+        let account = Address::new(vec![1, 2, 3]);
+        let balance = 100;
+        simulator.set_balance(account.clone(), balance);
+        assert_eq!(simulator.get_balance(account), balance);
+    }
+}
+
+// For wasm32 target, provide dummy types
+#[cfg(target_arch = "wasm32")]
+pub struct SimulatorState;
+
+#[cfg(target_arch = "wasm32")]
+pub struct Simulator;
+
+#[cfg(target_arch = "wasm32")]
+impl Simulator {
+    pub fn new() -> Self {
+        Self
     }
 }

@@ -58,12 +58,17 @@
 
 #[cfg(feature = "build")]
 pub mod build;
-#[cfg(feature = "simulator")]
+
+#[cfg(all(feature = "simulator", not(target_arch = "wasm32")))]
 pub mod simulator;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod context;
+#[cfg(not(target_arch = "wasm32"))]
 mod host;
+#[cfg(not(target_arch = "wasm32"))]
 mod memory;
+#[cfg(not(target_arch = "wasm32"))]
 mod state;
 mod types;
 
@@ -81,19 +86,40 @@ mod logging {
     pub fn register_panic() {}
 }
 
-#[cfg(feature = "bindings")]
+#[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
 pub use self::context::ExternalCallContext;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use self::{
     context::{Context, ExternalCallArgs, ExternalCallError},
     state::{macro_types, Error},
-    types::{Address, ContractId, Gas, Id, ID_LEN},
 };
 
+pub use self::types::{Address, ContractId, Gas, Id, ID_LEN};
+
 #[doc(hidden)]
-pub use self::{
-    logging::{log, register_panic},
-    memory::HostPtr,
-};
+#[cfg(not(target_arch = "wasm32"))]
+pub use self::memory::HostPtr;
+
+// For wasm32 target, provide dummy types
+#[cfg(target_arch = "wasm32")]
+#[derive(borsh::BorshDeserialize, borsh::BorshSerialize)]
+pub struct Context {
+    _private: (),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Context {
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub type HostPtr = u32;
+
+#[cfg(target_arch = "wasm32")]
+pub use self::logging::{log, register_panic};
 
 pub use sdk_macros::{public, state_schema};
 

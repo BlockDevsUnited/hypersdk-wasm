@@ -1,11 +1,11 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::error::Error;
-use borsh::{BorshDeserialize, BorshSerialize};
-use simulator::Simulator as SimVM;
-use crate::types::Address;
+use std::sync::{Arc, RwLock};
+use simulator::Simulator as BaseSimulator;
+use crate::types::Address as WasmlAddress;
 use thiserror::Error;
+use borsh::BorshSerialize;
 
 #[derive(Debug, Error)]
 pub enum ExternalCallError {
@@ -17,62 +17,61 @@ pub enum ExternalCallError {
     Io(#[from] std::io::Error),
 }
 
-impl From<Address> for simulator::Address {
-    fn from(addr: Address) -> Self {
-        let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(&addr.as_bytes()[..32]);
-        Self::new(bytes)
+impl From<WasmlAddress> for simulator::Address {
+    fn from(addr: WasmlAddress) -> Self {
+        simulator::Address::new(addr.as_bytes().to_vec())
     }
 }
 
-impl From<simulator::Address> for Address {
+impl From<simulator::Address> for WasmlAddress {
     fn from(addr: simulator::Address) -> Self {
         let mut bytes = [0u8; 33];
         bytes[..32].copy_from_slice(addr.as_bytes());
-        Self::new(bytes)
+        WasmlAddress::new(bytes)
     }
 }
 
 pub struct Simulator {
-    vm: SimVM,
-    actor: Address,
+    vm: Arc<RwLock<BaseSimulator>>,
+    actor: WasmlAddress,
     height: u64,
     timestamp: u64,
+}
+
+impl Default for Simulator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Simulator {
     pub fn new() -> Self {
         Self {
-            vm: SimVM::new(),
-            actor: Address::new([0u8; 33]),
+            vm: Arc::new(RwLock::new(BaseSimulator::new())),
+            actor: WasmlAddress::new([0u8; 33]),
             height: 0,
             timestamp: 0,
         }
     }
 
-    pub fn create_contract(&mut self, contract_path: &str) -> Result<CreateContractResult, ExternalCallError> {
-        // Read WASM code from file
-        let wasm_code = std::fs::read(contract_path)
-            .map_err(|e| ExternalCallError::ContractCreation(e.to_string()))?;
-        
-        // Generate a deterministic address for the contract
+    pub fn create_contract(&mut self, wasm_code: Vec<u8>) -> Result<CreateContractResult, ExternalCallError> {
+        // Create a deterministic address from the wasm code
         let mut address = [0u8; 33];
-        // Use a simple hash of the code for now
         for (i, byte) in wasm_code.iter().enumerate() {
             address[i % 33] ^= byte;
         }
-        let contract_addr = Address::new(address);
+        let contract_addr = WasmlAddress::new(address);
 
-        self.vm.create_contract(contract_addr.clone().into(), wasm_code);
+        self.vm.write().unwrap().create_contract(contract_addr.clone().into(), wasm_code);
         
         Ok(CreateContractResult {
             address: contract_addr,
         })
     }
 
-    pub fn call_contract<T: borsh::BorshDeserialize, U: borsh::BorshSerialize>(
+    pub fn call_contract<U: BorshSerialize>(
         &mut self,
-        contract: Address,
+        _contract: WasmlAddress,
         method: &str,
         params: U,
         gas: u64,
@@ -80,17 +79,17 @@ impl Simulator {
         let args = borsh::to_vec(&params)
             .map_err(|e| ExternalCallError::ContractExecution(e.to_string()))?;
         
-        let result = self.vm.call_contract(contract.into(), method, &args, gas)
+        let result = self.vm.write().unwrap().execute_wasm(&[], method, &args, gas)
             .map_err(|e| ExternalCallError::ContractExecution(e.to_string()))?;
         
         Ok(result)
     }
 
-    pub fn get_actor(&self) -> Address {
+    pub fn get_actor(&self) -> WasmlAddress {
         self.actor.clone()
     }
 
-    pub fn set_actor(&mut self, actor: Address) {
+    pub fn set_actor(&mut self, actor: WasmlAddress) {
         self.actor = actor;
     }
 
@@ -110,17 +109,25 @@ impl Simulator {
         self.timestamp = timestamp;
     }
 
-    pub fn get_balance(&self, account: Address) -> u64 {
-        self.vm.get_balance(account.into())
+    pub fn get_balance(&self, account: WasmlAddress) -> u64 {
+        let vm = self.vm.read().unwrap();
+        vm.get_balance(account.into())
     }
 
-    pub fn set_balance(&mut self, account: Address, balance: u64) {
-        self.vm.set_balance(account.into(), balance);
+    pub fn set_balance(&mut self, account: WasmlAddress, balance: u64) {
+        let vm = self.vm.write().unwrap();
+        vm.set_balance(account.into(), balance);
+    }
+
+    pub fn execute(&self, contract: &[u8], method: &str, args: &[u8], gas: u64) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let vm = self.vm.read().unwrap();
+        vm.execute_wasm(contract, method, args, gas)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 }
 
 pub struct CreateContractResult {
-    pub address: Address,
+    pub address: WasmlAddress,
 }
 
 #[cfg(test)]
@@ -130,14 +137,14 @@ mod tests {
     #[test]
     fn initial_balance_is_zero() {
         let sim = Simulator::new();
-        let addr = Address::new([1u8; 33]);
+        let addr = WasmlAddress::new([1u8; 33]);
         assert_eq!(sim.get_balance(addr), 0);
     }
 
     #[test]
     fn get_balance() {
         let mut sim = Simulator::new();
-        let addr = Address::new([1u8; 33]);
+        let addr = WasmlAddress::new([1u8; 33]);
         let balance = 100;
         sim.set_balance(addr.clone(), balance);
         assert_eq!(sim.get_balance(addr), balance);
@@ -146,7 +153,7 @@ mod tests {
     #[test]
     fn set_balance() {
         let mut sim = Simulator::new();
-        let addr = Address::new([1u8; 33]);
+        let addr = WasmlAddress::new([1u8; 33]);
         let balance = 100;
         sim.set_balance(addr.clone(), balance);
         assert_eq!(sim.get_balance(addr), balance);

@@ -10,11 +10,14 @@ cfg-if = "1.0.0"
 displaydoc = { version = "0.2.5", default-features = false }
 hashbrown = "0.14.5"
 sdk-macros = { workspace = true }
-simulator = { path = "../simulator", features = ["std"] }
 thiserror = { workspace = true }
+simulator = { path = "../simulator", default-features = false, optional = true }
 
 [dev-dependencies]
 env_logger = "0.11.5"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+simulator = { path = "../simulator", features = ["std"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.5.1"
@@ -23,13 +26,14 @@ pprof = { version = "0.13.0", features = ["criterion", "flamegraph"] }
 wasmlanche-test = { path = "wasmlanche-test" }
 
 [features]
-bindings = []
-build = ["std"]
 default = ["std"]
-debug = ["std"]
 std = []
-test = ["std", "simulator"]
-simulator = ["std"]
+wasm = []
+simulator = ["dep:simulator"]
+bindings = ["std"]
+build = ["std"]
+debug = ["std"]
+test = ["std"]
 
 [package.metadata.docs.rs]
 all-features = true
