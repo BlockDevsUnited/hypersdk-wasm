@@ -31,7 +31,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", common_path.to_string_lossy());
     println!("cargo:rerun-if-changed={}", rust_src.to_string_lossy());
 
-    let output = target_dir.join("libsimulator.so");
+    let output = target_dir.join("libsimulator.a");
     let go_file = ffi_package.join("ffi.go");
 
     // Compile callbacks.c
@@ -52,7 +52,7 @@ fn main() {
 
     // Build the Go library
     let status = Command::new("go")
-        .args(["build", "-buildmode=c-shared", "-tags=debug", "-o"])
+        .args(["build", "-buildmode=c-archive", "-tags=debug", "-o"])
         .arg(&output)
         .arg(&go_file)
         .env("CGO_LDFLAGS", format!("-Wl,-force_load,{}", callbacks_o.display()))
@@ -67,7 +67,7 @@ fn main() {
         "cargo::rustc-link-search=native={}",
         target_dir.to_string_lossy()
     );
-    println!("cargo:rustc-link-lib=dylib=simulator");
+    println!("cargo:rustc-link-lib=static=simulator");
 
     // Generate bindings
     let bindings = bindgen::Builder::default()

@@ -37,13 +37,17 @@ unsafe impl Zeroable for Address {}
 unsafe impl Pod for Address {}
 
 impl Address {
-    pub const LEN: usize = size_of::<Self>();
+    pub const LEN: usize = 33;
     pub const ZERO: Self = Self([0; Self::LEN]);
 
     // Constructor function for Address
     #[must_use]
     pub fn new(bytes: [u8; Self::LEN]) -> Self {
         Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
     }
 }
 
