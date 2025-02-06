@@ -27,8 +27,7 @@ impl From<Box<[u8]>> for ContractId {
 }
 
 /// Represents an address where a smart contract is deployed.
-#[cfg_attr(feature = "debug", derive(Debug))]
-#[derive(Clone, Copy, Ord, PartialOrd, PartialEq, Eq, BorshSerialize, BorshDeserialize, Hash)]
+#[derive(Clone, Copy, Ord, PartialOrd, PartialEq, Eq, BorshSerialize, BorshDeserialize, Hash, Debug)]
 #[repr(transparent)]
 pub struct Address([u8; 33]);
 
@@ -69,5 +68,17 @@ impl IntoIterator for Address {
 impl AsRef<[u8]> for Address {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl From<[u8; 33]> for Address {
+    fn from(bytes: [u8; 33]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl From<&[u8; 33]> for Address {
+    fn from(bytes: &[u8; 33]) -> Self {
+        Self(*bytes)
     }
 }

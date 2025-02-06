@@ -62,44 +62,21 @@ impl HostPtr {
     pub fn is_null(&self) -> bool {
         self.0.is_null()
     }
-}
 
-#[cfg(feature = "test")]
-impl HostPtr {
-    #[must_use]
     pub fn null() -> Self {
-        Self(core::ptr::null())
+        Self(std::ptr::null())
     }
 
-    #[must_use]
     pub fn as_ptr(&self) -> *const u8 {
         self.0
     }
-}
 
-/// Allocate memory into the instance of Contract and return the offset to the
-/// start of the block.
-/// # Panics
-/// Panics if the pointer exceeds the maximum size of an isize or that the allocated memory is null.
-#[no_mangle]
-pub(crate) extern "C-unwind" fn alloc(len: usize) -> HostPtr {
-    assert!(len > 0, "cannot allocate 0 sized data");
-    // can only fail if `len > isize::MAX` for u8
-    let layout = Layout::array::<u8>(len).expect("capacity overflow");
-
-    let ptr = unsafe { allocate(layout) };
-
-    if ptr.is_null() {
-        handle_alloc_error(layout);
+    pub fn from_raw(ptr: *const u8) -> Self {
+        Self(ptr)
     }
-
-    allocations::insert(ptr, len);
-
-    HostPtr(ptr.cast_const())
 }
 
-#[cfg(test)]
-#[allow(clippy::useless_vec)]
+#[cfg(feature = "test")]
 mod tests {
     use super::*;
     use std::ptr;
@@ -200,4 +177,25 @@ mod tests {
 
         assert_eq!(&*ptr, &*data);
     }
+}
+
+/// Allocate memory into the instance of Contract and return the offset to the
+/// start of the block.
+/// # Panics
+/// Panics if the pointer exceeds the maximum size of an isize or that the allocated memory is null.
+#[no_mangle]
+pub(crate) extern "C-unwind" fn alloc(len: usize) -> HostPtr {
+    assert!(len > 0, "cannot allocate 0 sized data");
+    // can only fail if `len > isize::MAX` for u8
+    let layout = Layout::array::<u8>(len).expect("capacity overflow");
+
+    let ptr = unsafe { allocate(layout) };
+
+    if ptr.is_null() {
+        handle_alloc_error(layout);
+    }
+
+    allocations::insert(ptr, len);
+
+    HostPtr(ptr.cast_const())
 }

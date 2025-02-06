@@ -1,55 +1,97 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use crate::{
-    borsh::{self, BorshSerialize},
-    Address, Gas,
-};
+use std::collections::HashMap;
+use borsh::{BorshSerialize, BorshDeserialize};
 use cfg_if::cfg_if;
 
-cfg_if! {
-    if #[cfg(feature = "test")] {
-        pub use test_wrappers::*;
-    } else {
-        pub use external_wrappers::*;
+use crate::{
+    error::Error,
+    types::{Address, Gas},
+    memory::HostPtr,
+};
+
+#[derive(Debug, Default, Clone, BorshSerialize, BorshDeserialize)]
+pub struct StateAccessor {
+    // We'll use an in-memory store for now
+    store: HashMap<Vec<u8>, Vec<u8>>,
+}
+
+impl StateAccessor {
+    pub fn new() -> Self {
+        Self {
+            store: HashMap::new(),
+        }
+    }
+
+    pub fn get(&self, key: Vec<u8>) -> Option<Vec<u8>> {
+        self.store.get(&key).cloned()
+    }
+
+    pub fn store(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.store.insert(key, value);
+    }
+
+    pub fn delete(&mut self, key: Vec<u8>) {
+        self.store.remove(&key);
+    }
+
+    pub fn get_balance(&self, _addr: &[u8]) -> u64 {
+        // For now, return a default balance
+        1000
     }
 }
 
-pub struct StateAccessor;
-
-pub(crate) struct CallContractArgs<'a> {
-    pub(crate) address: Address,
-    pub(crate) function_name: &'a str,
-    pub(crate) args: &'a [u8],
-    pub(crate) max_units: Gas,
-    pub(crate) value: u64,
+pub struct CallContractArgs<'a> {
+    pub contract: &'a [u8],
+    pub method: &'a str,
+    pub args: &'a [u8],
+    pub gas: u64,
 }
 
 impl BorshSerialize for CallContractArgs<'_> {
-    fn serialize<W: borsh::io::Write>(&self, writer: &mut W) -> borsh::io::Result<()> {
-        let Self {
-            address,
-            function_name,
-            args,
-            max_units,
-            value,
-        } = self;
-
-        address.serialize(writer)?;
-        function_name.serialize(writer)?;
-        args.serialize(writer)?;
-
-        cfg_if! {
-            if #[cfg(feature = "test")] {
-                let _ = max_units;
-            } else {
-                max_units.serialize(writer)?;
-            }
-        }
-
-        value.serialize(writer)?;
-
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        BorshSerialize::serialize(&self.contract.len(), writer)?;
+        writer.write_all(self.contract)?;
+        BorshSerialize::serialize(&self.method, writer)?;
+        BorshSerialize::serialize(&self.args.len(), writer)?;
+        writer.write_all(self.args)?;
+        BorshSerialize::serialize(&self.gas, writer)?;
         Ok(())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod wasm {
+    use super::*;
+
+    #[link(wasm_import_module = "env")]
+    extern "C" {
+        pub fn get_balance(args_ptr: *const u8) -> u64;
+        pub fn get_bytes(args_ptr: *const u8) -> HostPtr;
+        pub fn put(args_ptr: *const u8);
+        pub fn delete(args_ptr: *const u8);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod test {
+    use super::*;
+
+    pub fn get_balance(_args: &[u8]) -> u64 {
+        1000
+    }
+
+    pub fn get_bytes(_args: &[u8]) -> HostPtr {
+        HostPtr::null()
+    }
+
+    pub fn put(_args: &[u8]) {
+        // No-op for tests
+    }
+
+    pub fn delete(_args: &[u8]) {
+        // No-op for tests
     }
 }
 
@@ -254,7 +296,7 @@ mod test_wrappers {
 mod external_wrappers {
     use super::CallContractArgs;
     use crate::host::StateAccessor;
-    use crate::HostPtr;
+    use crate::memory::HostPtr;
 
     impl StateAccessor {
         #[inline]
@@ -275,10 +317,11 @@ mod external_wrappers {
             #[link(wasm_import_module = "state")]
             extern "C" {
                 #[link_name = "get"]
-                fn get_bytes(ptr: *const u8, len: usize) -> HostPtr;
+                fn get_bytes(ptr: *const u8, len: usize) -> u32;
             }
 
-            unsafe { get_bytes(args.as_ptr(), args.len()) }
+            let ptr = unsafe { get_bytes(args.as_ptr(), args.len()) };
+            HostPtr::from_raw(ptr as *const u8)
         }
     }
 
@@ -295,14 +338,15 @@ mod external_wrappers {
 
         #[inline]
         pub fn deploy(&self, args: &[u8]) -> HostPtr {
-            use crate::HostPtr;
+            use crate::memory::HostPtr;
             #[link(wasm_import_module = "contract")]
             extern "C" {
                 #[link_name = "deploy"]
-                fn deploy(ptr: *const u8, len: usize) -> HostPtr;
+                fn deploy(ptr: *const u8, len: usize) -> u32;
             }
 
-            unsafe { deploy(args.as_ptr(), args.len()) }
+            let ptr = unsafe { deploy(args.as_ptr(), args.len()) };
+            HostPtr::from_raw(ptr as *const u8)
         }
 
         #[inline]
@@ -310,12 +354,13 @@ mod external_wrappers {
             #[link(wasm_import_module = "contract")]
             extern "C" {
                 #[link_name = "call_contract"]
-                fn call_contract(ptr: *const u8, len: usize) -> HostPtr;
+                fn call_contract(ptr: *const u8, len: usize) -> u32;
             }
 
             let args = borsh::to_vec(args).expect("failed to serialize args");
 
-            unsafe { call_contract(args.as_ptr(), args.len()) }
+            let ptr = unsafe { call_contract(args.as_ptr(), args.len()) };
+            HostPtr::from_raw(ptr as *const u8)
         }
 
         #[inline]
@@ -323,10 +368,11 @@ mod external_wrappers {
             #[link(wasm_import_module = "balance")]
             extern "C" {
                 #[link_name = "get"]
-                fn get(ptr: *const u8, len: usize) -> HostPtr;
+                fn get(ptr: *const u8, len: usize) -> u32;
             }
 
-            unsafe { get(args.as_ptr(), args.len()) }
+            let ptr = unsafe { get(args.as_ptr(), args.len()) };
+            HostPtr::from_raw(ptr as *const u8)
         }
 
         #[inline]
@@ -334,10 +380,11 @@ mod external_wrappers {
             #[link(wasm_import_module = "contract")]
             extern "C" {
                 #[link_name = "remaining_fuel"]
-                fn get_remaining_fuel() -> HostPtr;
+                fn get_remaining_fuel() -> u32;
             }
 
-            unsafe { get_remaining_fuel() }
+            let ptr = unsafe { get_remaining_fuel() };
+            HostPtr::from_raw(ptr as *const u8)
         }
 
         #[inline]
@@ -345,10 +392,11 @@ mod external_wrappers {
             #[link(wasm_import_module = "balance")]
             extern "C" {
                 #[link_name = "send"]
-                fn send_value(ptr: *const u8, len: usize) -> HostPtr;
+                fn send_value(ptr: *const u8, len: usize) -> u32;
             }
 
-            unsafe { send_value(args.as_ptr(), args.len()) }
+            let ptr = unsafe { send_value(args.as_ptr(), args.len()) };
+            HostPtr::from_raw(ptr as *const u8)
         }
     }
 }
