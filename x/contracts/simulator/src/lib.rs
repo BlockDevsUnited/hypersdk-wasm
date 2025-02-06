@@ -6,7 +6,9 @@ extern crate alloc;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::collections::HashMap;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+use tokio::sync::Mutex;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::str::FromStr;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
@@ -74,11 +76,11 @@ impl SimulatorState {
         }
     }
 
-    pub fn get_value(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub async fn get_value(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.state.get(key).cloned()
     }
 
-    pub fn set_value(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    pub async fn set_value(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.state.insert(key, value);
     }
 }
@@ -156,7 +158,11 @@ impl Simulator {
             let mut data = vec![0u8; len as usize];
             memory.read(caller.as_context_mut(), ptr as usize, &mut data)?;
             
-            *result_clone.lock().unwrap() = Some(data);
+            // Convert the closure to be async
+            let result_clone2 = result_clone.clone();
+            tokio::spawn(async move {
+                *result_clone2.lock().await = Some(data);
+            });
             Ok(())
         })?;
 
@@ -189,11 +195,15 @@ impl Simulator {
             let mut data = vec![0u8; len as usize];
             memory.read(caller.as_context_mut(), ptr as usize, &mut data)?;
             
-            let value = state.lock().unwrap().get_value(&data);
+            // Convert the closure to be async and use block_in_place to avoid deadlocks
+            let state2 = state.clone();
+            let value = tokio::runtime::Handle::current().block_on(async move {
+                state2.lock().await.get_value(&data).await
+            });
             
             if let Some(value) = value {
                 let ptr = memory.data_size(caller.as_context()) as i32;
-                memory.grow(caller.as_context_mut(), 1)?;
+                memory.grow(caller.as_context_mut(), (value.len() / 65536 + 1) as u64)?;
                 memory.write(caller.as_context_mut(), ptr as usize, &value)?;
                 Ok(ptr)
             } else {
@@ -214,7 +224,11 @@ impl Simulator {
             let mut value = vec![0u8; value_len as usize];
             memory.read(caller.as_context_mut(), value_ptr as usize, &mut value)?;
             
-            state.lock().unwrap().set_value(key, value);
+            // Convert the closure to be async
+            let state2 = state.clone();
+            tokio::spawn(async move {
+                state2.lock().await.set_value(key, value).await;
+            });
             Ok(())
         })?;
 
@@ -249,21 +263,21 @@ impl Simulator {
         instance.get_typed_func::<(), ()>(&mut store, method)?.call_async(&mut store, ()).await?;
 
         // Get the result before dropping anything
-        let final_result = result.lock().unwrap().take().unwrap_or_default();
+        let final_result = result.lock().await.take().unwrap_or_default();
         Ok(final_result)
     }
 
-    pub fn get_balance(&self, account: Address) -> u64 {
-        self.state.lock().unwrap().balances.get(&account.0).copied().unwrap_or_default()
+    pub async fn get_balance(&self, account: Address) -> u64 {
+        self.state.lock().await.balances.get(&account.0).copied().unwrap_or_default()
     }
 
-    pub fn set_balance(&mut self, account: Address, balance: u64) {
-        let mut state = self.state.lock().unwrap();
+    pub async fn set_balance(&mut self, account: Address, balance: u64) {
+        let mut state = self.state.lock().await;
         state.balances.insert(account.0, balance);
     }
 
-    pub fn create_contract(&mut self, contract: Address, code: Vec<u8>) {
-        let mut state = self.state.lock().unwrap();
+    pub async fn create_contract(&mut self, contract: Address, code: Vec<u8>) {
+        let mut state = self.state.lock().await;
         state.contracts.insert(contract.0, code);
     }
 }
@@ -272,27 +286,27 @@ impl Simulator {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_simulator_creation() {
+    #[tokio::test]
+    async fn test_simulator_creation() {
         let simulator = Simulator::new();
-        assert!(simulator.get_state().lock().unwrap().get_value(&[]).is_none());
+        assert!(simulator.get_state().lock().await.get_value(&[]).await.is_none());
     }
 
-    #[test]
-    fn test_contract_creation() {
+    #[tokio::test]
+    async fn test_contract_creation() {
         let mut simulator = Simulator::new();
         let contract = Address::new(vec![1, 2, 3]);
         let code = vec![0, 1, 2, 3];
-        simulator.create_contract(contract.clone(), code.clone());
-        assert_eq!(simulator.get_state().lock().unwrap().contracts.get(&contract.0).unwrap(), &code);
+        simulator.create_contract(contract.clone(), code.clone()).await;
+        assert_eq!(simulator.get_state().lock().await.contracts.get(&contract.0).unwrap(), &code);
     }
 
-    #[test]
-    fn test_balance() {
+    #[tokio::test]
+    async fn test_balance() {
         let mut simulator = Simulator::new();
         let account = Address::new(vec![1, 2, 3]);
-        simulator.set_balance(account.clone(), 100);
-        assert_eq!(simulator.get_balance(account), 100);
+        simulator.set_balance(account.clone(), 100).await;
+        assert_eq!(simulator.get_balance(account).await, 100);
     }
 }
 

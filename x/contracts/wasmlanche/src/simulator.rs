@@ -80,7 +80,7 @@ impl Simulator {
         // Get contract code
         let vm = self.vm.read().await;
         let state = vm.get_state();
-        let state_guard = state.read().await;
+        let state_guard = state.lock().await;
         let contract_code = state_guard.get_value(contract.as_bytes()).await
             .ok_or_else(|| ExternalCallError::ContractExecution("Contract not found".to_string()))?;
         drop(state_guard);
