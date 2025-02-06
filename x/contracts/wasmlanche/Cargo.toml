@@ -12,6 +12,7 @@ hashbrown = "0.14.5"
 sdk-macros = { workspace = true }
 thiserror = { workspace = true }
 simulator = { path = "../simulator", default-features = false, optional = true }
+tokio = { version = "1.36", features = ["sync"] }
 
 [dev-dependencies]
 env_logger = "0.11.5"

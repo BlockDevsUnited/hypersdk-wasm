@@ -8,7 +8,7 @@ use syn::{
     parse_quote, parse_str,
     punctuated::Punctuated,
     spanned::Spanned,
-    Block, Error, FnArg, Generics, Ident, ItemFn, Pat, PatIdent, PatType, PatWild, ReturnType,
+    Block, Error, FnArg, Generics, Ident, ItemFn, Pat, PatIdent, PatType, ReturnType,
     Signature, Token, Type, TypeReference, Visibility,
 };
 
@@ -39,26 +39,17 @@ pub fn impl_public(public_fn: PublicFn) -> Result<TokenStream, Error> {
                 #(#other_inputs),*
             }
 
-            #[link(wasm_import_module = "contract")]
-            extern "C" {
-                #[link_name = "set_call_result"]
-                fn set_call_result(ptr: *const u8, len: usize);
-            }
-
-            #[cfg(target_arch = "wasm32")]
-            unsafe fn get_args_slice(ptr: wasmlanche::HostPtr) -> &'static [u8] {
-                let ptr = ptr as *const u8;
-                let len = *(ptr.offset(-4) as *const u32) as usize;
-                std::slice::from_raw_parts(ptr, len)
-            }
-
             #[no_mangle]
-            unsafe extern "C-unwind" fn #name(args: wasmlanche::HostPtr) {
+            unsafe extern "C-unwind" fn #name(args: wasmlanche::HostPtr) -> i64 {
                 wasmlanche::register_panic();
 
                 let result = {
                     #[cfg(target_arch = "wasm32")]
-                    let args_slice = get_args_slice(args);
+                    let args_slice = unsafe {
+                        let ptr = args as *const u8;
+                        let len = *(ptr.offset(-4) as *const u32) as usize;
+                        core::slice::from_raw_parts(ptr, len)
+                    };
                     #[cfg(not(target_arch = "wasm32"))]
                     let args_slice = &args;
 
@@ -66,11 +57,10 @@ pub fn impl_public(public_fn: PublicFn) -> Result<TokenStream, Error> {
 
                     let Args { mut ctx, #(#args_names),* } = args;
 
-                    let result = super::#name(&mut ctx, #(#args_names_2),*);
-                    wasmlanche::borsh::to_vec(&result).expect("error serializing result")
+                    super::#name(&mut ctx, #(#args_names_2),*)
                 };
 
-                unsafe { set_call_result(result.as_ptr(), result.len()) };
+                result as i64
             }
         }
     };

@@ -72,19 +72,12 @@ mod memory;
 mod state;
 mod types;
 
-#[cfg(feature = "debug")]
-mod logging;
-#[cfg(not(feature = "debug"))]
-mod logging {
-    #[macro_export]
-    macro_rules! dbg {
-        // match anything
-        ($($token:tt)*) => {};
-    }
-
+pub mod logging {
     pub fn log(_msg: &str) {}
     pub fn register_panic() {}
 }
+
+pub use self::logging::{log, register_panic};
 
 #[cfg(all(feature = "bindings", not(target_arch = "wasm32")))]
 pub use self::context::ExternalCallContext;
@@ -117,9 +110,6 @@ impl Context {
 
 #[cfg(target_arch = "wasm32")]
 pub type HostPtr = u32;
-
-#[cfg(target_arch = "wasm32")]
-pub use self::logging::{log, register_panic};
 
 pub use sdk_macros::{public, state_schema};
 

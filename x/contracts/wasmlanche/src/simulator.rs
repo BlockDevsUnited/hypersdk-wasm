@@ -1,7 +1,8 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use simulator::Simulator as BaseSimulator;
 use crate::types::Address as WasmlAddress;
 use thiserror::Error;
@@ -54,7 +55,7 @@ impl Simulator {
         }
     }
 
-    pub fn create_contract(&mut self, wasm_code: Vec<u8>) -> Result<CreateContractResult, ExternalCallError> {
+    pub async fn create_contract(&mut self, wasm_code: Vec<u8>) -> Result<CreateContractResult, ExternalCallError> {
         // Create a deterministic address from the wasm code
         let mut address = [0u8; 33];
         for (i, byte) in wasm_code.iter().enumerate() {
@@ -62,66 +63,79 @@ impl Simulator {
         }
         let contract_addr = WasmlAddress::new(address);
 
-        self.vm.write().unwrap().create_contract(contract_addr.clone().into(), wasm_code);
+        self.vm.write().await.create_contract(contract_addr.clone().into(), wasm_code).await;
         
         Ok(CreateContractResult {
             address: contract_addr,
         })
     }
 
-    pub fn call_contract<U: BorshSerialize>(
+    pub async fn call_contract<U: BorshSerialize>(
         &mut self,
-        _contract: WasmlAddress,
+        contract: WasmlAddress,
         method: &str,
         params: U,
         gas: u64,
     ) -> Result<Vec<u8>, ExternalCallError> {
+        // Get contract code
+        let vm = self.vm.read().await;
+        let state = vm.get_state();
+        let state_guard = state.read().await;
+        let contract_code = state_guard.get_value(contract.as_bytes()).await
+            .ok_or_else(|| ExternalCallError::ContractExecution("Contract not found".to_string()))?;
+        drop(state_guard);
+        drop(vm);
+        
+        // Serialize parameters
         let args = borsh::to_vec(&params)
             .map_err(|e| ExternalCallError::ContractExecution(e.to_string()))?;
         
-        let result = self.vm.write().unwrap().execute_wasm(&[], method, &args, gas)
+        // Execute contract
+        let mut vm = self.vm.write().await;
+        let result = vm.execute(&contract_code, method, &args, gas)
+            .await
             .map_err(|e| ExternalCallError::ContractExecution(e.to_string()))?;
         
         Ok(result)
     }
 
-    pub fn get_actor(&self) -> WasmlAddress {
+    pub async fn get_actor(&self) -> WasmlAddress {
         self.actor.clone()
     }
 
-    pub fn set_actor(&mut self, actor: WasmlAddress) {
+    pub async fn set_actor(&mut self, actor: WasmlAddress) {
         self.actor = actor;
     }
 
-    pub fn get_height(&self) -> u64 {
+    pub async fn get_height(&self) -> u64 {
         self.height
     }
 
-    pub fn set_height(&mut self, height: u64) {
+    pub async fn set_height(&mut self, height: u64) {
         self.height = height;
     }
 
-    pub fn get_timestamp(&self) -> u64 {
+    pub async fn get_timestamp(&self) -> u64 {
         self.timestamp
     }
 
-    pub fn set_timestamp(&mut self, timestamp: u64) {
+    pub async fn set_timestamp(&mut self, timestamp: u64) {
         self.timestamp = timestamp;
     }
 
-    pub fn get_balance(&self, account: WasmlAddress) -> u64 {
-        let vm = self.vm.read().unwrap();
-        vm.get_balance(account.into())
+    pub async fn get_balance(&self, account: WasmlAddress) -> u64 {
+        let vm = self.vm.read().await;
+        vm.get_balance(account.into()).await
     }
 
-    pub fn set_balance(&mut self, account: WasmlAddress, balance: u64) {
-        let vm = self.vm.write().unwrap();
-        vm.set_balance(account.into(), balance);
+    pub async fn set_balance(&mut self, account: WasmlAddress, balance: u64) {
+        self.vm.write().await.set_balance(account.into(), balance).await;
     }
 
-    pub fn execute(&self, contract: &[u8], method: &str, args: &[u8], gas: u64) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let vm = self.vm.read().unwrap();
-        vm.execute_wasm(contract, method, args, gas)
+    pub async fn execute(&mut self, contract: &[u8], method: &str, args: &[u8], gas: u64) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut vm = self.vm.write().await;
+        vm.execute(contract, method, args, gas)
+            .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 }
@@ -134,28 +148,28 @@ pub struct CreateContractResult {
 mod tests {
     use super::*;
 
-    #[test]
-    fn initial_balance_is_zero() {
+    #[tokio::test]
+    async fn initial_balance_is_zero() {
         let sim = Simulator::new();
         let addr = WasmlAddress::new([1u8; 33]);
-        assert_eq!(sim.get_balance(addr), 0);
+        assert_eq!(sim.get_balance(addr).await, 0);
     }
 
-    #[test]
-    fn get_balance() {
+    #[tokio::test]
+    async fn get_balance() {
         let mut sim = Simulator::new();
         let addr = WasmlAddress::new([1u8; 33]);
         let balance = 100;
-        sim.set_balance(addr.clone(), balance);
-        assert_eq!(sim.get_balance(addr), balance);
+        sim.set_balance(addr.clone(), balance).await;
+        assert_eq!(sim.get_balance(addr).await, balance);
     }
 
-    #[test]
-    fn set_balance() {
+    #[tokio::test]
+    async fn set_balance() {
         let mut sim = Simulator::new();
         let addr = WasmlAddress::new([1u8; 33]);
         let balance = 100;
-        sim.set_balance(addr.clone(), balance);
-        assert_eq!(sim.get_balance(addr), balance);
+        sim.set_balance(addr.clone(), balance).await;
+        assert_eq!(sim.get_balance(addr).await, balance);
     }
 }
