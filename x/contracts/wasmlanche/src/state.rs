@@ -1,143 +1,129 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-extern crate alloc;
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
-use std::collections::HashMap;
-use std::io;
-use std::mem;
+#[cfg(feature = "std")]
+use std::string::String;
+#[cfg(feature = "std")]
+use std::vec::Vec;
+
+use async_trait::async_trait;
 use borsh::{BorshDeserialize, BorshSerialize};
+use thiserror::Error;
 
-use crate::{
-    error::Error as WasmlError,
-    host::StateAccessor,
-};
-
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum Error {
-    /// borsh error
-    BorshError(io::Error),
-    /// state error
+    #[error("State error: {0}")]
     StateError(String),
+    
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 }
 
-/// A trait for defining the associated value for a given state-key.
-/// This trait is not meant to be implemented manually but should instead be implemented with the [`state_schema!`](crate::state_schema) macro.
-/// # Safety
-/// Do not implement this trait manually. Use the [`state_schema`](crate::state_schema) macro instead.
-pub trait Schema {
-    type Value: BorshSerialize + BorshDeserialize;
-    fn to_bytes(&self) -> Vec<u8>;
-    fn from_bytes(bytes: &[u8]) -> Result<Self::Value, Error>;
+pub trait StateKey {
+    fn get_key() -> Vec<u8>;
 }
 
-#[derive(Debug)]
-pub(crate) struct PrefixedKey<K> {
-    prefix: Vec<u8>,
-    key: K,
+#[async_trait]
+pub trait StateAccess {
+    async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error>;
+    async fn get_state<S: BorshDeserialize + StateKey + Send + Sync>(&self) -> Result<Option<S>, Error>;
+    async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, Error>;
 }
 
-impl<K> PrefixedKey<K> {
-    fn as_bytes(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, mem::size_of::<Self>()) }
+impl From<borsh::maybestd::io::Error> for Error {
+    fn from(err: borsh::maybestd::io::Error) -> Self {
+        Error::SerializationError(err.to_string())
     }
 }
 
-#[derive(Debug, Default, BorshSerialize, BorshDeserialize)]
-pub struct Cache {
-    host: StateAccessor,
-    cache: HashMap<Vec<u8>, Vec<u8>>,
-    deleted: Vec<Vec<u8>>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
-impl Cache {
-    pub fn new(host: StateAccessor) -> Self {
-        Self {
-            host,
-            cache: HashMap::new(),
-            deleted: Vec::new(),
+    #[derive(BorshSerialize, BorshDeserialize)]
+    struct TestState {
+        value: String,
+    }
+
+    impl StateKey for TestState {
+        fn get_key() -> Vec<u8> {
+            b"test_state".to_vec()
         }
     }
 
-    pub fn get<K: Schema>(&mut self, key: &K) -> Result<Option<K::Value>, Error> {
-        let key_bytes = key.to_bytes();
-        
-        if self.deleted.contains(&key_bytes) {
-            return Ok(None);
-        }
-
-        if let Some(value_bytes) = self.cache.get(&key_bytes) {
-            let value = K::from_bytes(value_bytes)?;
-            return Ok(Some(value));
-        }
-
-        if let Some(value_bytes) = self.host.get(key_bytes) {
-            let value = K::from_bytes(&value_bytes)?;
-            return Ok(Some(value));
-        }
-
-        Ok(None)
+    struct TestStateAccess {
+        state: Arc<RwLock<Option<Vec<u8>>>>,
     }
 
-    pub fn store<K: Schema>(&mut self, key: K, value: K::Value) -> Result<(), Error> {
-        let key_bytes = key.to_bytes();
-        let value_bytes = borsh::to_vec(&value).map_err(|e| Error::BorshError(e))?;
-        self.cache.insert(key_bytes, value_bytes);
-        Ok(())
-    }
-
-    pub fn delete(&mut self, key_bytes: Vec<u8>) {
-        self.deleted.push(key_bytes);
-    }
-
-    pub fn flush(&mut self) {
-        for key in &self.deleted {
-            self.host.delete(key.clone());
+    #[async_trait]
+    impl StateAccess for TestStateAccess {
+        async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error> {
+            let bytes = state.try_to_vec().map_err(|e| Error::SerializationError(e.to_string()))?;
+            let mut state_guard = self.state.write().await;
+            *state_guard = Some(bytes);
+            Ok(())
         }
 
-        for (key, value) in &self.cache {
-            self.host.store(key.clone(), value.clone());
+        async fn get_state<S: BorshDeserialize + StateKey + Send + Sync>(&self) -> Result<Option<S>, Error> {
+            let state_guard = self.state.read().await;
+            match &*state_guard {
+                Some(bytes) => {
+                    let state = borsh::BorshDeserialize::try_from_slice(bytes)
+                        .map_err(|e| Error::SerializationError(e.to_string()))?;
+                    Ok(Some(state))
+                }
+                None => Ok(None),
+            }
         }
 
-        self.cache.clear();
-        self.deleted.clear();
+        async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, Error> {
+            let mut state_guard = self.state.write().await;
+            let old_state = state_guard.take();
+            match old_state {
+                Some(bytes) => {
+                    let state = borsh::BorshDeserialize::try_from_slice(&bytes)
+                        .map_err(|e| Error::SerializationError(e.to_string()))?;
+                    Ok(Some(state))
+                }
+                None => Ok(None),
+            }
+        }
     }
-}
 
-pub(crate) fn to_key<K: Schema>(key: K) -> PrefixedKey<K> {
-    PrefixedKey {
-        prefix: vec![0; mem::size_of::<K>()],
-        key,
-    }
-}
+    #[tokio::test]
+    async fn test_state_operations() {
+        let state_access = TestStateAccess {
+            state: Arc::new(RwLock::new(None)),
+        };
 
-pub trait IntoPairs: private::Sealed {
-    fn into_pairs(self) -> Vec<(Vec<u8>, Vec<u8>)>;
-}
+        let test_state = TestState {
+            value: "test".to_string(),
+        };
 
-mod private {
-    pub trait Sealed {}
-}
+        let mut state_access = state_access;
 
-impl<K, V> private::Sealed for ((K, V),)
-where
-    K: Schema<Value = V>,
-    V: BorshSerialize,
-{
-}
+        // Test store_state
+        state_access.store_state(&test_state).await.unwrap();
 
-impl<K, V> IntoPairs for ((K, V),)
-where
-    K: Schema<Value = V>,
-    V: BorshSerialize,
-{
-    fn into_pairs(self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let ((key, value),) = self;
-        let mut pairs = Vec::with_capacity(1);
-        let mut value_bytes = Vec::new();
-        value.serialize(&mut value_bytes).expect("Failed to serialize value");
-        let prefixed_key = to_key(key);
-        pairs.push((prefixed_key.as_bytes().to_vec(), value_bytes));
-        pairs
+        // Test get_state
+        let retrieved: Option<TestState> = state_access.get_state().await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().value, "test");
+
+        // Test delete_state
+        let deleted: Option<TestState> = state_access.delete_state().await.unwrap();
+        assert!(deleted.is_some());
+        assert_eq!(deleted.unwrap().value, "test");
+
+        // Verify state is deleted
+        let retrieved: Option<TestState> = state_access.get_state().await.unwrap();
+        assert!(retrieved.is_none());
     }
 }

@@ -1,23 +1,25 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::{path::Path, process::Command};
+use std::env;
+use std::path::Path;
+use std::process::Command;
 
-pub const BUILD_DIR_NAME: &str = "build";
+pub const BUILD_DIR_NAME: &str = "target";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RELEASE_PROFILE: &str = "release";
 
 #[allow(clippy::module_name_repetitions)]
 /// Put this in your build.rs file. It currently relies on `/build` directory to be in your crate root.
 /// # Panics
-/// Will panic when attempting to buld the wasm file fails.
+/// Will panic when attempting to build the wasm file fails.
 pub fn build_wasm() {
-    let target = std::env::var("TARGET").unwrap();
-    let profile = std::env::var("PROFILE").unwrap();
+    let target = env::var("TARGET").unwrap();
+    let profile = env::var("PROFILE").unwrap();
 
     if target != WASM_TARGET {
-        let package_name = std::env::var("CARGO_PKG_NAME").unwrap();
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        let package_name = env::var("CARGO_PKG_NAME").unwrap();
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
         let profile = if profile == RELEASE_PROFILE {
             &profile
@@ -25,7 +27,7 @@ pub fn build_wasm() {
             "test"
         };
 
-        let features = std::env::vars()
+        let features = env::vars()
             .filter_map(|(key, value)| {
                 if key.starts_with("CARGO_FEATURE_") && value == "1" {
                     let feature = key.trim_start_matches("CARGO_FEATURE_").to_lowercase();
@@ -114,4 +116,8 @@ pub fn build_wasm() {
             r#"cargo:warning=If the simulator fails to find the "{package_name}" contract, try running `cargo clean -p {package_name}` followed by `cargo test` again."#
         );
     }
+}
+
+fn main() {
+    build_wasm();
 }

@@ -188,6 +188,8 @@ cfg_if! {
                         for _ in 0..n {
                             SINGLETON.with_borrow(|map| {
                                 assert!(map.is_empty());
+                                // Add a small sleep to increase chance of concurrent access
+                                std::thread::sleep(std::time::Duration::from_micros(1));
                             });
                         }
                     }
@@ -197,9 +199,12 @@ cfg_if! {
                     // run enough times to make sure there's a collision
                     let t1 = scope.spawn(test_with_iterations(10_000));
                     let t2 = scope.spawn(test_with_iterations(100));
-                    let (t1, t2) = (t1.join(), t2.join());
-
-                    if let Err(e) = t1.and(t2) {
+                    
+                    // Propagate the panic from either thread
+                    if let Err(e) = t1.join() {
+                        std::panic::resume_unwind(e);
+                    }
+                    if let Err(e) = t2.join() {
                         std::panic::resume_unwind(e);
                     }
                 });

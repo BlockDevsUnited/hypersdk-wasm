@@ -1,53 +1,86 @@
-use std::fmt;
+// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
+// See the file LICENSE for licensing terms.
+
 use std::io;
-use borsh::io::Error as BorshError;
+use borsh::maybestd::io as borsh_io;
 
 #[derive(Debug)]
 pub enum Error {
-    IoError(io::Error),
-    BorshError(io::Error),
-    StateError(String),
-    ExternalCallError(String),
-    Custom(String),
+    Io(io::Error),
+    State(String),
+    Event(String),
+    Gas(String),
+    Memory(String),
+    Serialization(String),
+    Contract(String),
+    Crypto(String),
+    TooExpensive(String),
+    Unknown(String),
+    NameTooLong(String),
+    DataTooLarge(String),
+    TooManyEvents(String),
 }
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::IoError(e) => write!(f, "IO error: {}", e),
-            Error::BorshError(e) => write!(f, "Borsh error: {}", e),
-            Error::StateError(s) => write!(f, "State error: {}", s),
-            Error::ExternalCallError(s) => write!(f, "External call error: {}", s),
-            Error::Custom(s) => write!(f, "{}", s),
+            Error::Io(e) => write!(f, "IO error: {}", e),
+            Error::State(e) => write!(f, "State error: {}", e),
+            Error::Event(e) => write!(f, "Event error: {}", e),
+            Error::Gas(e) => write!(f, "Gas error: {}", e),
+            Error::Memory(e) => write!(f, "Memory error: {}", e),
+            Error::Serialization(e) => write!(f, "Serialization error: {}", e),
+            Error::Contract(e) => write!(f, "Contract error: {}", e),
+            Error::Crypto(e) => write!(f, "Crypto error: {}", e),
+            Error::TooExpensive(e) => write!(f, "Too expensive error: {}", e),
+            Error::Unknown(e) => write!(f, "Unknown error: {}", e),
+            Error::NameTooLong(e) => write!(f, "Name too long error: {}", e),
+            Error::DataTooLarge(e) => write!(f, "Data too large error: {}", e),
+            Error::TooManyEvents(e) => write!(f, "Too many events error: {}", e),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
-        Error::IoError(err)
+        Error::Io(err)
     }
 }
 
-impl From<String> for Error {
-    fn from(error: String) -> Self {
-        Error::Custom(error)
+// Instead of implementing From for borsh_io::Error, provide a helper method
+impl Error {
+    pub fn from_borsh_io(err: borsh_io::Error) -> Self {
+        Error::Serialization(err.to_string())
     }
 }
 
-impl From<&str> for Error {
-    fn from(error: &str) -> Self {
-        Error::Custom(error.to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_conversion() {
+        let io_err = io::Error::new(io::ErrorKind::Other, "test error");
+        let err = Error::from(io_err);
+        assert!(matches!(err, Error::Io(_)));
+
+        let borsh_err = borsh_io::Error::new(
+            borsh_io::ErrorKind::Other,
+            "test error",
+        );
+        let err = Error::from_borsh_io(borsh_err);
+        assert!(matches!(err, Error::Serialization(_)));
     }
 }
 
-impl From<crate::state::Error> for Error {
-    fn from(err: crate::state::Error) -> Self {
-        match err {
-            crate::state::Error::BorshError(e) => Error::BorshError(e),
-            crate::state::Error::StateError(e) => Error::StateError(e),
-        }
-    }
-}
+// Export EventError as a type alias for backward compatibility
+pub type EventError = Error;

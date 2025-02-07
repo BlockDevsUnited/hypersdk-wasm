@@ -2,34 +2,96 @@
 // See the file LICENSE for licensing terms.
 
 #![deny(clippy::pedantic)]
-// "build" and "debug" features enable std, so does `test`
 #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(not(feature = "std"), feature(alloc_error_handler))]
 #![cfg_attr(target_arch = "wasm32", no_std)]
 
+#[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(target_arch = "wasm32")]
-extern crate wee_alloc;
-
-// Internal modules
+mod build;
 pub mod context;
 pub mod error;
+pub mod events;
+pub mod gas;
 pub mod host;
 pub mod memory;
 pub mod simulator;
 pub mod state;
 pub mod types;
 
-// Re-exports
-pub use context::Context;
-pub use error::Error;
-pub use host::StateAccessor;
-pub use memory::HostPtr;
-pub use sdk_macros::public;
-pub use simulator::Address;
-pub use simulator::Simulator;
-pub use state::Schema;
-pub use types::{Gas, Id};
+pub use crate::{
+    context::Context,
+    error::Error,
+    events::{Event, EventLog},
+    gas::GasCounter,
+    host::Host,
+    memory::Memory,
+    simulator::Simulator,
+    state::StateAccess,
+    types::WasmlAddress,
+};
+
+pub const ID_LEN: usize = 32;
+
+/// Welcome to the wasmlanche! This SDK provides a set of tools to help you write
+/// your smart-contracts in Rust to be deployed and run on a `HyperVM`.
+/// 
+/// # Getting Started
+/// 
+/// To get started, create a new Rust project and add the following to your
+/// `Cargo.toml`:
+/// 
+/// ```toml
+/// [dependencies]
+/// wasmlanche = { git = "https://github.com/hyperledger/wasmlanche" }
+/// ```
+/// 
+/// Then, create a new file called `lib.rs` and add the following:
+/// 
+/// ```rust
+/// use wasmlanche::prelude::*;
+/// 
+/// #[public]
+/// fn init() {
+///     // Your initialization code here
+/// }
+/// 
+/// #[public]
+/// fn handle() {
+///     // Your contract code here
+/// }
+/// ```
+/// 
+/// # Features
+/// 
+/// The wasmlanche SDK provides the following features:
+/// 
+/// - `std` - Enable standard library features
+/// - `no_std` - Disable standard library features
+/// 
+/// By default, the `std` feature is enabled.
+/// 
+/// # Examples
+/// 
+/// For more examples, see the `examples` directory in the repository.
+/// 
+/// # License
+/// 
+/// This project is licensed under the Apache License, Version 2.0.
+/// 
+/// # Contributing
+/// 
+/// We welcome contributions! Please see the `CONTRIBUTING.md` file in the
+/// repository for more information.
+
+/// Re-exports commonly used types and traits.
+pub mod prelude {
+    pub use super::{Context, Error, Event, EventLog, GasCounter};
+    pub use sdk_macros::public;
+}
+
+pub use borsh;
 
 #[cfg(target_arch = "wasm32")]
 #[global_allocator]
@@ -39,48 +101,31 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 #[derive(borsh::BorshDeserialize, borsh::BorshSerialize)]
 pub struct Contract;
 
-#[cfg(target_arch = "wasm32")]
-#[derive(borsh::BorshDeserialize, borsh::BorshSerialize)]
-pub struct Context {
-    _private: (),
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
-#[cfg(target_arch = "wasm32")]
-impl Context {
-    pub fn new() -> Self {
-        Self { _private: () }
+    #[tokio::test]
+    async fn test_context() {
+        let state = Arc::new(RwLock::new(host::HostState::default()));
+        let host = Arc::new(RwLock::new(Host::new(state)));
+        let mut context = Context::new(
+            WasmlAddress::new(vec![1, 2, 3]),
+            0,
+            0,
+            host,
+            None,
+        );
+
+        // Test event handling
+        let event = Event::StateChange {
+            key: b"key".to_vec(),
+            value: b"value".to_vec(),
+        };
+        context.add_event(event).await.unwrap();
+        let events = context.get_events().await;
+        assert_eq!(events.len(), 1);
     }
-}
-
-pub use borsh;
-
-/// Welcome to the wasmlanche! This SDK provides a set of tools to help you write
-/// your smart-contracts in Rust to be deployed and run on a `HyperVM`.
-///
-/// There are three main concepts that you need to understand to write smart-contracts:
-///
-/// 1. `Context`: This is the main interface to interact with the blockchain. It provides
-///    methods to read and write state, get account balances, and more.
-///
-/// 2. `Schema`: This trait is used to define the structure of your contract's state.
-///    It provides methods to serialize and deserialize your state.
-///
-/// 3. `public`: This attribute macro is used to mark functions that can be called from
-///    outside the contract.
-///
-/// Here's a simple example of a contract that adds two numbers:
-///
-/// ```rust
-/// use wasmlanche::prelude::*;
-///
-/// #[public]
-/// fn add(a: u64, b: u64) -> u64 {
-///     a + b
-/// }
-/// ```
-
-
-pub mod prelude {
-    pub use super::{Context, Schema};
-    pub use sdk_macros::public;
 }

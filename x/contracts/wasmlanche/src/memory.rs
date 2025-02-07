@@ -7,15 +7,92 @@
 //! the contract. These methods are unsafe as should be used
 //! with caution.
 
-extern crate alloc;
-
+#[cfg(not(feature = "std"))]
 use alloc::{
     alloc::{alloc as allocate, dealloc as deallocate, handle_alloc_error, Layout},
+    string::String,
     vec::Vec,
 };
-use core::{mem::ManuallyDrop, ops::Deref, slice};
 
-mod allocations;
+#[cfg(feature = "std")]
+use std::{
+    alloc::{alloc as allocate, dealloc as deallocate, handle_alloc_error, Layout},
+    string::String,
+    vec::Vec,
+};
+
+use core::{mem::ManuallyDrop, ops::Deref, slice, fmt};
+
+pub mod allocations;
+
+/// A pointer to memory in the host environment.
+#[derive(Debug)]
+pub struct Memory {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl Memory {
+    /// Create a new Memory from raw parts.
+    pub fn from_raw_parts(ptr: *mut u8, len: usize) -> Self {
+        Self { ptr, len }
+    }
+
+    /// Create a new Memory by allocating space for the given size.
+    pub fn new(size: usize) -> Self {
+        let layout = Layout::array::<u8>(size).unwrap();
+        let ptr = unsafe { allocate(layout) };
+        if ptr.is_null() {
+            handle_alloc_error(layout);
+        }
+        Self { ptr, len: size }
+    }
+
+    /// Get the raw pointer.
+    pub fn as_ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    /// Get the raw mutable pointer.
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr
+    }
+
+    /// Get the length of the memory.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Check if the memory is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Drop for Memory {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            let layout = Layout::array::<u8>(self.len).unwrap();
+            unsafe {
+                deallocate(self.ptr, layout);
+            }
+        }
+    }
+}
+
+impl Deref for Memory {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl AsRef<[u8]> for Memory {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
 
 #[doc(hidden)]
 /// A pointer where data points to the host.

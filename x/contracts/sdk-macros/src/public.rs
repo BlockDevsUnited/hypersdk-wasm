@@ -17,6 +17,7 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
     let name = &input.sig.ident;
     let wasm_name = quote::format_ident!("__wasm_{}", name);
     let mut inputs = input.sig.inputs.iter().cloned();
+    let is_async = input.sig.asyncness.is_some();
 
     // Extract and validate context parameter
     let context_pat_type = match inputs.next() {
@@ -89,10 +90,64 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
     let ret_type = input.sig.output;
     let attrs = &input.attrs;
 
+    let function_call = if is_async {
+        quote! {
+            super::#name(&mut ctx, #(#param_names),*).await
+        }
+    } else {
+        quote! {
+            super::#name(&mut ctx, #(#param_names),*)
+        }
+    };
+
+    let async_token = if is_async {
+        quote! { async }
+    } else {
+        quote! {}
+    };
+
+    let wasm_async_token = if is_async {
+        quote! { async }
+    } else {
+        quote! {}
+    };
+
+    let wasm_result = if is_async {
+        quote! {
+            let result = futures::executor::block_on(async {
+                let args_slice = unsafe {
+                    let ptr = args as *const u8;
+                    let len = *(ptr.offset(-4) as *const u32) as usize;
+                    core::slice::from_raw_parts(ptr, len)
+                };
+
+                let Args { mut ctx, #(#param_names),* } = BorshDeserialize::try_from_slice(args_slice)
+                    .expect("Failed to deserialize arguments");
+
+                #function_call
+            });
+        }
+    } else {
+        quote! {
+            let result = {
+                let args_slice = unsafe {
+                    let ptr = args as *const u8;
+                    let len = *(ptr.offset(-4) as *const u32) as usize;
+                    core::slice::from_raw_parts(ptr, len)
+                };
+
+                let Args { mut ctx, #(#param_names),* } = BorshDeserialize::try_from_slice(args_slice)
+                    .expect("Failed to deserialize arguments");
+
+                #function_call
+            };
+        }
+    };
+
     Ok(quote! {
         #(#attrs)*
         #[cfg_attr(target_arch = "wasm32", no_mangle)]
-        pub fn #name(#context_pat_type, #(#other_inputs),*) #ret_type {
+        pub #async_token fn #name(#context_pat_type, #(#other_inputs),*) #ret_type {
             #block
         }
 
@@ -112,18 +167,7 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
             pub unsafe extern "C-unwind" fn #wasm_name(args: u32) -> i64 {
                 register_panic();
 
-                let result = {
-                    let args_slice = unsafe {
-                        let ptr = args as *const u8;
-                        let len = *(ptr.offset(-4) as *const u32) as usize;
-                        core::slice::from_raw_parts(ptr, len)
-                    };
-
-                    let Args { mut ctx, #(#param_names),* } = BorshDeserialize::try_from_slice(args_slice)
-                        .expect("Failed to deserialize arguments");
-
-                    super::#name(&mut ctx, #(#param_names),*)
-                };
+                #wasm_result
 
                 let result_bytes = BorshSerialize::try_to_vec(&result)
                     .expect("Failed to serialize result");

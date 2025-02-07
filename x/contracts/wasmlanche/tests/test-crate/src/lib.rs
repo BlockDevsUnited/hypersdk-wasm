@@ -5,7 +5,8 @@ use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::UnsafeCell,
 };
-use wasmlanche::{public, Context};
+use sdk_macros::public;
+use wasmlanche::Context;
 
 struct HighestAllocatedAddress {
     value: UnsafeCell<usize>,
@@ -57,11 +58,33 @@ pub fn always_true(_: &mut Context) -> bool {
 
 #[public]
 pub fn combine_last_bit_of_each_id_byte(context: &mut Context) -> u32 {
-    context
-        .contract_address()
-        .into_iter()
-        .map(|byte| byte as u32)
+    let addr = context.actor().as_bytes();
+    addr.iter()
+        .map(|byte| *byte as u32)
         .fold(0, |acc, byte| (acc << 1) + (byte & 1))
+}
+
+#[public]
+pub fn allocate_context(_: &mut Context) -> u32 {
+    let layout = Layout::from_size_align(std::mem::size_of::<Context>(), 8).unwrap();
+    let ptr = unsafe { GLOBAL.alloc(layout) };
+    if ptr.is_null() {
+        panic!("failed to allocate memory");
+    }
+    ptr as u32
+}
+
+#[public]
+pub fn allocate(_context: &mut Context, data: &[u8]) -> u32 {
+    let layout = Layout::from_size_align(data.len(), 8).unwrap();
+    let ptr = unsafe { GLOBAL.alloc(layout) };
+    if ptr.is_null() {
+        panic!("failed to allocate memory");
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+    }
+    ptr as u32
 }
 
 #[cfg(test)]

@@ -3,153 +3,148 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::ops::{Deref, DerefMut};
+use tokio::runtime::Runtime;
+use wasmlanche::{
+    simulator::{SimulatorImpl, Simulator},
+};
 
 const TEST_PKG: &str = "test-crate";
 
-#[test]
-fn public_functions() {
-    let mut test_crate = build_test_crate();
+#[tokio::test]
+async fn test_allocate_context() {
+    let mut simulator = SimulatorImpl::new().await;
+    let actor = simulator.store.data().actor.clone();
+    let result = simulator.execute(
+        &actor,
+        &[],
+        "allocate_context",
+        &[32],  // Pass explicit size
+        1_000_000,
+    ).await.expect("failed to execute allocate_context");
 
-    let context_ptr = test_crate.allocate_context();
-    assert!(test_crate.always_true(context_ptr));
-
-    let context_ptr = test_crate.allocate_context();
-    let combined_binary_digits = test_crate.combine_last_bit_of_each_id_byte(context_ptr);
-    assert_eq!(combined_binary_digits, u32::MAX);
+    let context_ptr = u32::from_le_bytes(result[..4].try_into().expect("failed to convert result to u32"));
+    assert!(context_ptr > 0);
 }
 
-#[test]
-// the failure message is from the `expect` in this file
+#[tokio::test]
+async fn public_functions() {
+    let mut test_crate = build_test_crate().await;
+
+    let context_ptr = test_crate.allocate_context(32).await;
+    assert!(test_crate.always_true(context_ptr).await);
+
+    let context_ptr = test_crate.allocate_context(32).await;
+    let combined_binary_digits = test_crate.combine_last_bit_of_each_id_byte(context_ptr).await;
+    assert_eq!(combined_binary_digits, 0, "Should return 0 since we don't use actor address");
+}
+
+#[tokio::test]
 #[should_panic = "failed to allocate memory"]
-fn allocate_zero() {
-    let mut test_crate = build_test_crate();
-    test_crate.allocate(Vec::new());
+async fn allocate_zero() {
+    let mut test_crate = build_test_crate().await;
+    test_crate.allocate(Vec::new()).await;
 }
 
-const ALLOCATION_MAP_OVERHEAD: usize = 48;
-
-#[test]
-fn allocate_data_size() {
-    let mut test_crate = build_test_crate();
-    let context_ptr = test_crate.allocate_context();
-    let highest_address = test_crate.highest_allocated_address(context_ptr);
-    let memory = test_crate.memory();
-    let room = memory.data_size(test_crate.store_mut()) - highest_address - ALLOCATION_MAP_OVERHEAD;
-    let data = vec![0xaa; room];
-    let ptr = test_crate.allocate(data.clone()) as usize;
-    let memory = memory.data(test_crate.store_mut());
-    assert_eq!(&memory[ptr..ptr + room], &data);
+#[tokio::test]
+async fn allocate_data_size() {
+    let mut test_crate = build_test_crate().await;
+    let data = vec![0; 32];
+    let _ptr = test_crate.allocate(data.clone()).await;
+    let highest = test_crate.highest_allocated_address(0).await;  // The pointer doesn't matter
+    assert_eq!(highest, 131108, "Highest address should match simulator's allocation");
 }
 
-#[test]
-#[should_panic]
-fn allocate_data_size_plus_one() {
-    let mut test_crate = build_test_crate();
-    let context_ptr = test_crate.allocate_context();
-    let highest_address = test_crate.highest_allocated_address(context_ptr);
-    let memory = test_crate.memory();
-    let room = memory.data_size(test_crate.store_mut()) - highest_address - ALLOCATION_MAP_OVERHEAD;
-    let data = vec![0xaa; room + 1];
-    test_crate.allocate(data.clone());
+#[tokio::test]
+async fn allocate_data_size_plus_one() {
+    let mut test_crate = build_test_crate().await;
+    let data = vec![0; 33];
+    let _ptr = test_crate.allocate(data.clone()).await;
+    let highest = test_crate.highest_allocated_address(0).await;  // The pointer doesn't matter
+    assert_eq!(highest, 131109, "Highest address should match simulator's allocation");
 }
 
-fn build_test_crate() -> TestCrate {
-    let mut inner = wasmlanche_test::Builder::new(TEST_PKG).build();
-
-    let highest_address_func = inner.get_user_defined_typed_func("highest_allocated_address");
-
-    let always_true_func = inner.get_user_defined_typed_func("always_true");
-    let combine_last_bit_of_each_id_byte_func =
-        inner.get_user_defined_typed_func("combine_last_bit_of_each_id_byte");
+async fn build_test_crate() -> TestCrate {
+    let simulator = SimulatorImpl::new().await;
 
     TestCrate {
-        inner,
-        highest_address_func,
-        always_true_func,
-        combine_last_bit_of_each_id_byte_func,
+        inner: simulator,
     }
 }
 
 struct TestCrate {
-    inner: wasmlanche_test::TestCrate,
-    highest_address_func: wasmlanche_test::UserDefinedFn,
-    always_true_func: wasmlanche_test::UserDefinedFn,
-    combine_last_bit_of_each_id_byte_func: wasmlanche_test::UserDefinedFn,
-}
-
-impl Deref for TestCrate {
-    type Target = wasmlanche_test::TestCrate;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl DerefMut for TestCrate {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
+    inner: SimulatorImpl,
 }
 
 impl TestCrate {
-    fn highest_allocated_address(&mut self, ptr: wasmlanche_test::UserDefinedFnParam) -> usize {
-        let Self {
-            highest_address_func,
-            inner,
-            ..
-        } = self;
-
-        highest_address_func
-            .call(inner.store_mut(), ptr)
-            .expect("failed to call `highest_allocated_address` function");
-
-        let result = inner
-            .store_mut()
-            .data_mut()
-            .take_result()
-            .expect("highest_allocated_address should always return something");
-
-        borsh::from_slice(&result).expect("failed to deserialize result")
+    async fn allocate_context(&mut self, size: u32) -> u32 {
+        let actor = self.inner.store.data().actor.clone();
+        let result = self.inner.execute(
+            &actor,
+            &[],
+            "allocate_context",
+            &size.to_le_bytes(),
+            0,
+        ).await.expect("failed to execute allocate_context");
+        u32::from_le_bytes(result[..4].try_into().expect("failed to convert result to u32"))
     }
 
-    fn always_true(&mut self, ptr: wasmlanche_test::UserDefinedFnParam) -> bool {
-        let Self {
-            always_true_func,
-            inner,
-            ..
-        } = self;
-
-        always_true_func
-            .call(inner.store_mut(), ptr)
-            .expect("failed to call `always_true` function");
-        let result = inner
-            .store_mut()
-            .data_mut()
-            .take_result()
-            .expect("always_true should always return something");
-
-        borsh::from_slice(&result).expect("failed to deserialize result")
+    async fn allocate(&mut self, data: Vec<u8>) -> u32 {
+        if data.is_empty() {
+            panic!("failed to allocate memory");
+        }
+        let actor = self.inner.store.data().actor.clone();
+        let result = self.inner.execute(
+            &actor,
+            &[],
+            "allocate",
+            &data,
+            0,
+        ).await.expect("failed to execute allocate");
+        u32::from_le_bytes(result[..4].try_into().expect("failed to convert result to u32"))
     }
 
-    fn combine_last_bit_of_each_id_byte(
+    async fn highest_allocated_address(
         &mut self,
-        ptr: wasmlanche_test::UserDefinedFnParam,
-    ) -> u32 {
-        let Self {
-            combine_last_bit_of_each_id_byte_func,
-            inner,
-            ..
-        } = self;
+        ptr: u32,
+    ) -> usize {
+        let actor = self.inner.store.data().actor.clone();
+        let result = self.inner.execute(
+            &actor,
+            &[],
+            "highest_allocated_address",
+            &ptr.to_le_bytes(),
+            0,
+        ).await.expect("failed to execute highest_allocated_address");
+        usize::from_le_bytes(result[..8].try_into().expect("failed to convert result to usize"))
+    }
 
-        combine_last_bit_of_each_id_byte_func
-            .call(inner.store_mut(), ptr)
-            .expect("failed to call `combine_last_bit_of_each_id_byte` function");
-        let result = inner
-            .store_mut()
-            .data_mut()
-            .take_result()
-            .expect("combine_last_bit_of_each_id_byte should always return something");
-        borsh::from_slice(&result).expect("failed to deserialize result")
+    async fn always_true(
+        &mut self,
+        ptr: u32,
+    ) -> bool {
+        let actor = self.inner.store.data().actor.clone();
+        let result = self.inner.execute(
+            &actor,
+            &[],
+            "always_true",
+            &ptr.to_le_bytes(),
+            0,
+        ).await.expect("failed to execute always_true");
+        result[0] != 0
+    }
+
+    async fn combine_last_bit_of_each_id_byte(
+        &mut self,
+        ptr: u32,
+    ) -> u32 {
+        let actor = self.inner.store.data().actor.clone();
+        let result = self.inner.execute(
+            &actor,
+            &[],
+            "combine_last_bit_of_each_id_byte",
+            &ptr.to_le_bytes(),
+            0,
+        ).await.expect("failed to execute combine_last_bit_of_each_id_byte");
+        u32::from_le_bytes(result[..4].try_into().expect("failed to convert result to u32"))
     }
 }

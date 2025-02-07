@@ -1,402 +1,274 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::collections::HashMap;
-use borsh::{BorshSerialize, BorshDeserialize};
-use cfg_if::cfg_if;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Sha256, Digest};
+use sha3::Keccak256;
+use ed25519_dalek::{PublicKey, Signature, Verifier};
+use async_trait::async_trait;
+use std::{
+    future::Future,
+    pin::Pin,
+};
 
 use crate::{
     error::Error,
-    types::{Address, Gas},
-    memory::HostPtr,
+    events::{Event, EventLog},
+    gas::GasCounter,
+    simulator::Simulator,
+    state::StateAccess,
+    types::WasmlAddress,
 };
 
-#[derive(Debug, Default, Clone, BorshSerialize, BorshDeserialize)]
-pub struct StateAccessor {
-    // We'll use an in-memory store for now
-    store: HashMap<Vec<u8>, Vec<u8>>,
+#[derive(Debug, Default)]
+pub struct HostState {
+    pub event_log: EventLog,
+    pub gas_counter: GasCounter,
+    balances: std::collections::HashMap<Vec<u8>, u64>,
 }
 
-impl StateAccessor {
-    pub fn new() -> Self {
-        Self {
-            store: HashMap::new(),
-        }
-    }
+pub trait SimulatorWithDebug: Simulator + std::fmt::Debug {}
+impl<T: Simulator + std::fmt::Debug> SimulatorWithDebug for T {}
 
-    pub fn get(&self, key: Vec<u8>) -> Option<Vec<u8>> {
-        self.store.get(&key).cloned()
-    }
-
-    pub fn store(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.store.insert(key, value);
-    }
-
-    pub fn delete(&mut self, key: Vec<u8>) {
-        self.store.remove(&key);
-    }
-
-    pub fn get_balance(&self, _addr: &[u8]) -> u64 {
-        // For now, return a default balance
-        1000
-    }
+#[derive(Debug)]
+pub struct Host {
+    state: Arc<RwLock<HostState>>,
 }
 
-pub struct CallContractArgs<'a> {
-    pub contract: &'a [u8],
-    pub method: &'a str,
-    pub args: &'a [u8],
-    pub gas: u64,
-}
+impl Host {
+    pub fn new(state: Arc<RwLock<HostState>>) -> Self {
+        Self { state }
+    }
 
-impl BorshSerialize for CallContractArgs<'_> {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        BorshSerialize::serialize(&self.contract.len(), writer)?;
-        writer.write_all(self.contract)?;
-        BorshSerialize::serialize(&self.method, writer)?;
-        BorshSerialize::serialize(&self.args.len(), writer)?;
-        writer.write_all(self.args)?;
-        BorshSerialize::serialize(&self.gas, writer)?;
+    pub async fn add_event(&mut self, event: Event) -> Result<(), Error> {
+        let mut state = self.state.write().await;
+        state.event_log.add_event(event)
+    }
+
+    pub async fn charge_gas(&mut self, amount: u64) -> Result<(), Error> {
+        let mut state = self.state.write().await;
+        state.gas_counter.charge_gas(amount)?;
         Ok(())
     }
+
+    pub async fn get_state(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let state = self.state.read().await;
+        Ok(state.event_log.get_state(key).cloned())
+    }
+
+    pub async fn store_state(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let mut state = self.state.write().await;
+        state.event_log.store_state(key, value).map_err(|e| Error::Event(e.to_string()))
+    }
+
+    pub async fn delete_state(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let mut state = self.state.write().await;
+        let existing = state.event_log.get_state(key).cloned();
+        if existing.is_some() {
+            state.event_log.delete_state(key).map_err(|e| Error::Event(e.to_string()))?;
+        }
+        Ok(existing)
+    }
+
+    pub async fn execute(
+        &mut self,
+        _actor: &WasmlAddress,
+        _target: &[u8],
+        _method: &str,
+        _args: &[u8],
+        gas: u64,
+    ) -> Result<Vec<u8>, Error> {
+        self.charge_gas(gas).await?;
+        Ok(Vec::new())
+    }
+
+    pub async fn get_events(&self) -> Result<Vec<Event>, Error> {
+        let state = self.state.read().await;
+        Ok(state.event_log.events().iter().cloned().collect())
+    }
+
+    pub fn get_events_blocking(&self) -> Vec<Event> {
+        let state = self.state.blocking_read();
+        state.event_log.events().iter().cloned().collect()
+    }
+
+    pub fn get_contract_events(&self) -> Vec<Event> {
+        let state = self.state.blocking_read();
+        state.event_log.events().iter().cloned().collect()
+    }
+
+    pub fn get_all_events(&self) -> Vec<Event> {
+        futures::executor::block_on(async {
+            let state = self.state.read().await;
+            state.event_log.events().iter().cloned().collect()
+        })
+    }
+
+    pub fn get_events_for_contract(&self) -> Vec<Event> {
+        futures::executor::block_on(async {
+            let state = self.state.read().await;
+            state.event_log.events().iter().cloned().collect::<Vec<_>>()
+        })
+    }
+
+    pub fn get_events_for_contract_blocking(&self) -> Vec<Event> {
+        futures::executor::block_on(async {
+            let state = self.state.read().await;
+            state.event_log.events().iter().cloned().collect::<Vec<_>>()
+        })
+    }
+
+    pub fn get_events_for_contract_async(&self) -> Vec<Event> {
+        futures::executor::block_on(async {
+            let state = self.state.read().await;
+            state.event_log.events().iter().cloned().collect::<Vec<_>>()
+        })
+    }
+
+    pub fn remaining_gas(&self) -> Option<u64> {
+        futures::executor::block_on(async {
+            let state = self.state.read().await;
+            Some(state.gas_counter.gas_remaining())
+        })
+    }
+
+    pub fn sha256(&self, data: &[u8]) -> Result<[u8; 32], Error> {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        Ok(hasher.finalize().into())
+    }
+
+    pub fn keccak256(&self, data: &[u8]) -> Result<[u8; 32], Error> {
+        let mut hasher = Keccak256::new();
+        hasher.update(data);
+        Ok(hasher.finalize().into())
+    }
+
+    pub fn ed25519_verify(
+        &self,
+        pubkey: &[u8],
+        msg: &[u8],
+        sig: &[u8],
+    ) -> Result<bool, Error> {
+        let public_key = PublicKey::from_bytes(pubkey)
+            .map_err(|e| Error::Crypto(e.to_string()))?;
+        let signature = Signature::from_bytes(sig)
+            .map_err(|e| Error::Crypto(e.to_string()))?;
+        Ok(public_key.verify(msg, &signature).is_ok())
+    }
 }
 
-#[cfg(target_arch = "wasm32")]
-mod wasm {
+#[async_trait]
+impl Simulator for Host {
+    fn get_balance<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
+        Box::pin(async move {
+            let state = self.state.read().await;
+            state.balances.get(&account.as_bytes().to_vec()).copied().unwrap_or(0)
+        })
+    }
+
+    fn set_balance<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let mut state = self.state.write().await;
+            state.balances.insert(account.as_bytes().to_vec(), balance);
+        })
+    }
+
+    fn remaining_fuel(&self) -> u64 {
+        self.remaining_gas().unwrap_or(0)
+    }
+
+    fn get_events(&self) -> Vec<Event> {
+        self.state.blocking_read().event_log.events().iter().cloned().collect()
+    }
+
+    fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.store_state(key, value).await.unwrap_or(());
+        })
+    }
+
+    fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            self.get_state(key).await.unwrap_or(None)
+        })
+    }
+
+    fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            self.delete_state(key).await.unwrap_or(None)
+        })
+    }
+
+    fn execute<'a>(
+        &'a mut self,
+        actor: &'a WasmlAddress,
+        target: &'a [u8],
+        method: &'a str,
+        args: &'a [u8],
+        gas: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            self.execute(actor, target, method, args, gas)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
-    #[link(wasm_import_module = "env")]
-    extern "C" {
-        pub fn get_balance(args_ptr: *const u8) -> u64;
-        pub fn get_bytes(args_ptr: *const u8) -> HostPtr;
-        pub fn put(args_ptr: *const u8);
-        pub fn delete(args_ptr: *const u8);
-    }
-}
+    #[tokio::test]
+    async fn test_host_state() {
+        let state = Arc::new(RwLock::new(HostState::default()));
+        let mut host = Host::new(state);
 
-#[cfg(not(target_arch = "wasm32"))]
-mod test {
-    use super::*;
+        // Test store_state
+        host.store_state(b"key", b"value").await.unwrap();
 
-    pub fn get_balance(_args: &[u8]) -> u64 {
-        1000
-    }
+        // Test get_state
+        let value = host.get_state(b"key").await.unwrap();
+        assert_eq!(value, Some(b"value".to_vec()));
 
-    pub fn get_bytes(_args: &[u8]) -> HostPtr {
-        HostPtr::null()
-    }
+        // Test delete_state
+        let deleted = host.delete_state(b"key").await.unwrap();
+        assert_eq!(deleted, Some(b"value".to_vec()));
 
-    pub fn put(_args: &[u8]) {
-        // No-op for tests
+        // Verify state is deleted
+        let value = host.get_state(b"key").await.unwrap();
+        assert_eq!(value, None);
     }
 
-    pub fn delete(_args: &[u8]) {
-        // No-op for tests
-    }
-}
+    #[tokio::test]
+    async fn test_gas_charging() {
+        let state = Arc::new(RwLock::new(HostState::default()));
+        let mut host = Host::new(state);
 
-#[cfg(feature = "test")]
-mod test_wrappers {
-    use super::CallContractArgs;
-    use crate::{host::StateAccessor, Address, Gas, HostPtr};
-    use core::cell::{Cell, RefCell};
+        // Test charging gas
+        host.charge_gas(100).await.unwrap();
+        assert_eq!(host.remaining_gas(), Some(999900));
 
-    pub const BALANCE_PREFIX: u8 = 0;
-    pub const SEND_PREFIX: u8 = 1;
-    pub const CALL_FUNCTION_PREFIX: u8 = 2;
-    pub const DEPLOY_PREFIX: u8 = 3;
-
-    impl StateAccessor {
-        pub fn put(_args: &[u8]) {
-            // happens on context drop() -> cache drop() -> flush()
-            // this means this function wont do anything
-        }
-
-        pub fn get_bytes(_args: &[u8]) -> HostPtr {
-            // if calling get_bytes, not found in cache
-            HostPtr::null()
-        }
+        // Test charging more than remaining
+        assert!(host.charge_gas(1000000).await.is_err());
     }
 
-    #[derive(Clone)]
-    #[cfg_attr(feature = "debug", derive(Debug))]
-    pub struct Accessor {
-        state: MockState,
-    }
+    #[tokio::test]
+    async fn test_balance_operations() {
+        let state = Arc::new(RwLock::new(HostState::default()));
+        let mut host = Host::new(state);
+        let account = WasmlAddress::new(vec![1, 2, 3]);
 
-    impl Default for Accessor {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
+        // Test initial balance
+        assert_eq!(host.get_balance(&account).await, 0);
 
-    impl Accessor {
-        pub fn new() -> Self {
-            Accessor {
-                state: MockState::new(),
-            }
-        }
-
-        pub fn state(&self) -> &MockState {
-            &self.state
-        }
-
-        pub fn new_deploy_address(&self) -> Address {
-            let address: [u8; 33] = [self.state().deploy(); 33];
-            Address::new(address)
-        }
-
-        pub fn deploy(&self, key: &[u8]) -> HostPtr {
-            let key = [DEPLOY_PREFIX]
-                .iter()
-                .chain(key.iter())
-                .copied()
-                .collect::<Vec<u8>>();
-            let val = self.state.get(&key);
-
-            assert!(
-                !val.is_null(),
-                "Deploy function not mocked. Please mock the function call."
-            );
-
-            val
-        }
-
-        pub fn call_contract(&self, args: &CallContractArgs) -> HostPtr {
-            let key = {
-                // same default as borsh::to_vec uses
-                let mut key = Vec::with_capacity(1024);
-                key.push(CALL_FUNCTION_PREFIX);
-                borsh::to_writer(&mut key, args).expect("failed to serialize call-contract args");
-                key
-            };
-
-            let val = self.state.get(&key);
-
-            assert!(
-                !val.is_null(),
-                "Call function not mocked. Please mock the function call."
-            );
-
-            val
-        }
-
-        pub fn get_balance(&self, args: &[u8]) -> HostPtr {
-            // balance prefix + key
-            let key = [BALANCE_PREFIX]
-                .iter()
-                .chain(args.iter())
-                .copied()
-                .collect::<Vec<u8>>();
-
-            let host_ptr = self.state.get(&key);
-            assert!(
-                !host_ptr.is_null(),
-                "get_balance not mocked. Please mock the function call."
-            );
-
-            host_ptr
-        }
-
-        pub fn set_balance(&self, account: Address, balance: u64) {
-            let address_bytes = borsh::to_vec(&account).expect("failed to serialize");
-            let key = [BALANCE_PREFIX]
-                .iter()
-                .chain(address_bytes.iter())
-                .copied()
-                .collect::<Vec<u8>>();
-
-            let balance_bytes = borsh::to_vec(&balance).expect("failed to serialize");
-
-            self.state.put(&key, balance_bytes);
-        }
-
-        pub fn get_remaining_fuel(&self) -> HostPtr {
-            self.state().get_fuel()
-        }
-
-        pub fn send_value(&self, args: &[u8]) -> HostPtr {
-            // send prefix + key
-            let key = [SEND_PREFIX]
-                .iter()
-                .chain(args.iter())
-                .copied()
-                .collect::<Vec<u8>>();
-
-            let host_ptr = self.state.get(&key);
-            assert!(
-                !host_ptr.is_null(),
-                "send_value not mocked. Please mock the function call."
-            );
-
-            host_ptr
-        }
-    }
-
-    impl Default for MockState {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct MockState {
-        state: RefCell<hashbrown::HashMap<Vec<u8>, Vec<u8>>>,
-        deploys: Cell<u8>,
-        fuel: Gas,
-    }
-
-    impl MockState {
-        pub fn new() -> Self {
-            Self {
-                state: RefCell::new(hashbrown::HashMap::new()),
-                deploys: Cell::new(0),
-                fuel: u64::MAX,
-            }
-        }
-
-        pub fn get(&self, key: &[u8]) -> HostPtr {
-            match self.state.borrow().get(key) {
-                Some(val) => {
-                    let ptr = crate::memory::alloc(val.len());
-                    unsafe {
-                        std::ptr::copy(val.as_ptr(), ptr.as_ptr().cast_mut(), val.len());
-                    }
-                    ptr
-                }
-                None => HostPtr::null(),
-            }
-        }
-
-        pub fn put(&self, key: &[u8], value: Vec<u8>) {
-            self.state.borrow_mut().insert(key.into(), value);
-        }
-
-        pub fn deploy(&self) -> u8 {
-            self.deploys.set(self.deploys.get() + 1);
-            self.deploys.get()
-        }
-
-        pub fn get_fuel(&self) -> HostPtr {
-            let fuel_bytes = borsh::to_vec(&self.fuel).expect("failed to serialize");
-            let ptr = crate::memory::alloc(fuel_bytes.len());
-            unsafe {
-                std::ptr::copy(
-                    fuel_bytes.as_ptr(),
-                    ptr.as_ptr().cast_mut(),
-                    fuel_bytes.len(),
-                );
-            }
-            ptr
-        }
-    }
-}
-
-#[cfg(not(feature = "test"))]
-mod external_wrappers {
-    use super::CallContractArgs;
-    use crate::host::StateAccessor;
-    use crate::memory::HostPtr;
-
-    impl StateAccessor {
-        #[inline]
-        pub fn put(args: &[u8]) {
-            #[link(wasm_import_module = "state")]
-            extern "C" {
-                #[link_name = "put"]
-                fn put(ptr: *const u8, len: usize);
-            }
-
-            unsafe {
-                put(args.as_ptr(), args.len());
-            }
-        }
-
-        #[inline]
-        pub fn get_bytes(args: &[u8]) -> HostPtr {
-            #[link(wasm_import_module = "state")]
-            extern "C" {
-                #[link_name = "get"]
-                fn get_bytes(ptr: *const u8, len: usize) -> u32;
-            }
-
-            let ptr = unsafe { get_bytes(args.as_ptr(), args.len()) };
-            HostPtr::from_raw(ptr as *const u8)
-        }
-    }
-
-    #[derive(Clone)]
-    #[cfg_attr(feature = "debug", derive(Debug))]
-    pub struct Accessor;
-
-    impl Accessor {
-        #![allow(clippy::unused_self)]
-
-        pub fn new() -> Self {
-            Accessor
-        }
-
-        #[inline]
-        pub fn deploy(&self, args: &[u8]) -> HostPtr {
-            use crate::memory::HostPtr;
-            #[link(wasm_import_module = "contract")]
-            extern "C" {
-                #[link_name = "deploy"]
-                fn deploy(ptr: *const u8, len: usize) -> u32;
-            }
-
-            let ptr = unsafe { deploy(args.as_ptr(), args.len()) };
-            HostPtr::from_raw(ptr as *const u8)
-        }
-
-        #[inline]
-        pub fn call_contract(&self, args: &CallContractArgs) -> HostPtr {
-            #[link(wasm_import_module = "contract")]
-            extern "C" {
-                #[link_name = "call_contract"]
-                fn call_contract(ptr: *const u8, len: usize) -> u32;
-            }
-
-            let args = borsh::to_vec(args).expect("failed to serialize args");
-
-            let ptr = unsafe { call_contract(args.as_ptr(), args.len()) };
-            HostPtr::from_raw(ptr as *const u8)
-        }
-
-        #[inline]
-        pub fn get_balance(&self, args: &[u8]) -> HostPtr {
-            #[link(wasm_import_module = "balance")]
-            extern "C" {
-                #[link_name = "get"]
-                fn get(ptr: *const u8, len: usize) -> u32;
-            }
-
-            let ptr = unsafe { get(args.as_ptr(), args.len()) };
-            HostPtr::from_raw(ptr as *const u8)
-        }
-
-        #[inline]
-        pub fn get_remaining_fuel(&self) -> HostPtr {
-            #[link(wasm_import_module = "contract")]
-            extern "C" {
-                #[link_name = "remaining_fuel"]
-                fn get_remaining_fuel() -> u32;
-            }
-
-            let ptr = unsafe { get_remaining_fuel() };
-            HostPtr::from_raw(ptr as *const u8)
-        }
-
-        #[inline]
-        pub fn send_value(&self, args: &[u8]) -> HostPtr {
-            #[link(wasm_import_module = "balance")]
-            extern "C" {
-                #[link_name = "send"]
-                fn send_value(ptr: *const u8, len: usize) -> u32;
-            }
-
-            let ptr = unsafe { send_value(args.as_ptr(), args.len()) };
-            HostPtr::from_raw(ptr as *const u8)
-        }
+        // Test setting balance
+        host.set_balance(&account, 100).await;
+        assert_eq!(host.get_balance(&account).await, 100);
     }
 }

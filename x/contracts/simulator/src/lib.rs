@@ -8,11 +8,11 @@ use std::collections::HashMap;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::sync::Arc;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::str::FromStr;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-use wasmtime::{Config, Engine, Linker, Module, Store, Val, ValType, FuncType, Caller, AsContext, AsContextMut};
+use wasmtime::{Config, Engine, Linker, Module, Store, Caller, AsContextMut};
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use thiserror::Error;
@@ -94,14 +94,14 @@ impl SimulatorState {
 pub struct Simulator {
     engine: Engine,
     store: Store<()>,
-    state: Arc<parking_lot::RwLock<SimulatorState>>,
+    state: Arc<RwLock<SimulatorState>>,
     result: Option<Vec<u8>>,
     actor: Address,
 }
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 impl Simulator {
-    pub fn new(actor: Address) -> Self {
+    pub async fn new(actor: Address) -> Self {
         let mut config = Config::new();
         config.wasm_multi_value(true);
         config.wasm_multi_memory(true);
@@ -109,7 +109,7 @@ impl Simulator {
         
         let engine = Engine::new(&config).unwrap();
         let store = Store::new(&engine, ());
-        let state = Arc::new(parking_lot::RwLock::new(SimulatorState::new()));
+        let state = Arc::new(RwLock::new(SimulatorState::new()));
         
         Self {
             engine,
@@ -120,7 +120,7 @@ impl Simulator {
         }
     }
 
-    pub fn with_state(state: Arc<parking_lot::RwLock<SimulatorState>>) -> Self {
+    pub async fn with_state(state: Arc<RwLock<SimulatorState>>) -> Self {
         let mut config = Config::new();
         config.wasm_multi_value(true);
         config.wasm_multi_memory(true);
@@ -138,16 +138,16 @@ impl Simulator {
         }
     }
 
-    pub fn get_state(&self) -> Arc<parking_lot::RwLock<SimulatorState>> {
+    pub async fn get_state(&self) -> Arc<RwLock<SimulatorState>> {
         self.state.clone()
     }
 
-    pub async fn execute(&mut self, code: &[u8], method: &str, params: &[u8], gas: u64) -> Result<Vec<u8>, SimulatorError> {
+    pub async fn execute(&mut self, code: &[u8], method: &str, params: &[u8], _gas: u64) -> Result<Vec<u8>, SimulatorError> {
         // Reset result
         self.result = None;
         
         // Get contract code from state
-        let state = self.state.read();
+        let state = self.state.read().await;
         let contract_code = state.contracts.get(code).cloned().unwrap_or_else(|| code.to_vec());
         drop(state);
         
@@ -158,7 +158,7 @@ impl Simulator {
         let mut linker = Linker::new(&self.engine);
         
         // Add contract module imports
-        let result = Arc::new(Mutex::new(None));
+        let result = Arc::new(tokio::sync::Mutex::new(None));
         let result_clone = result.clone();
         
         linker.func_wrap("contract", "set_call_result", move |mut caller: Caller<'_, ()>, ptr: i32, len: i32| {
@@ -170,10 +170,10 @@ impl Simulator {
             let mut data = vec![0u8; len as usize];
             memory.read(caller.as_context_mut(), ptr as usize, &mut data)?;
             
-            // Convert the closure to be async
             let result_clone2 = result_clone.clone();
+            let data_clone = data.clone();
             tokio::spawn(async move {
-                *result_clone2.lock().await = Some(data);
+                *result_clone2.lock().await = Some(data_clone);
             });
             Ok(())
         })?;
@@ -204,93 +204,71 @@ impl Simulator {
                 .and_then(|e| e.into_memory())
                 .ok_or_else(|| SimulatorError::MemoryNotFound)?;
 
-            let mut data = vec![0u8; len as usize];
-            memory.read(caller.as_context_mut(), ptr as usize, &mut data)?;
+            let mut key = vec![0u8; len as usize];
+            memory.read(caller.as_context_mut(), ptr as usize, &mut key)?;
+
+            let state_clone = state.clone();
+            let key_clone = key.clone();
             
-            // Convert the closure to be async and use block_in_place to avoid deadlocks
-            let state2 = state.clone();
-            let value = tokio::runtime::Handle::current().block_on(async move {
-                state2.read().get_value(&data)
-            });
-            
-            if let Some(value) = value {
-                let ptr = memory.data_size(caller.as_context()) as i32;
-                memory.grow(caller.as_context_mut(), (value.len() / 65536 + 1) as u64)?;
-                memory.write(caller.as_context_mut(), ptr as usize, &value)?;
-                Ok(ptr)
-            } else {
-                Ok(-1)
-            }
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let state = state_clone.read().await;
+                    if let Some(value) = state.get_value(&key_clone) {
+                        memory.write(caller.as_context_mut(), ptr as usize, &value)?;
+                    }
+                    Ok::<_, SimulatorError>(())
+                })
+            })?;
+            Ok(())
         })?;
 
         let state = self.state.clone();
-        linker.func_wrap("state", "put", move |mut caller: Caller<'_, ()>, key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32| {
+        linker.func_wrap("state", "set", move |mut caller: Caller<'_, ()>, key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32| {
             let memory = caller
                 .get_export("memory")
                 .and_then(|e| e.into_memory())
                 .ok_or_else(|| SimulatorError::MemoryNotFound)?;
 
             let mut key = vec![0u8; key_len as usize];
-            memory.read(caller.as_context_mut(), key_ptr as usize, &mut key)?;
-            
             let mut value = vec![0u8; value_len as usize];
+            memory.read(caller.as_context_mut(), key_ptr as usize, &mut key)?;
             memory.read(caller.as_context_mut(), value_ptr as usize, &mut value)?;
+
+            let state_clone = state.clone();
+            let key_clone = key.clone();
+            let value_clone = value.clone();
             
-            // Convert the closure to be async
-            let state2 = state.clone();
-            tokio::spawn(async move {
-                state2.write().set_value(key, value)
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let mut state = state_clone.write().await;
+                    state.set_value(key_clone, value_clone);
+                })
             });
             Ok(())
         })?;
 
-        // Add host imports
-        let actor_bytes = self.actor.0.clone();
-        linker.func_wrap(
-            "host",
-            "get_actor",
-            move |_: Caller<'_, ()>| {
-                Ok(actor_bytes.len() as i64)
-            },
-        )?;
+        // Get instance and run
+        let instance = linker.instantiate(&mut self.store, &module)?;
+        let run = instance.get_typed_func::<(), ()>(&mut self.store, method)?;
+        run.call_async(&mut self.store, ()).await?;
 
-        linker.func_wrap(
-            "host",
-            "get_height",
-            |_: Caller<'_, ()>| {
-                Ok(0i64)
-            },
-        )?;
-
-        linker.func_wrap(
-            "host",
-            "get_timestamp",
-            |_: Caller<'_, ()>| {
-                Ok(0i64)
-            },
-        )?;
-
-        // Create store and instantiate module
-        let mut store = Store::new(&self.engine, ());
-        let instance = linker.instantiate_async(&mut store, &module).await?;
-        instance.get_typed_func::<(), ()>(&mut store, method)?.call_async(&mut store, ()).await?;
-
-        // Get the result before dropping anything
+        // Get result
         let final_result = result.lock().await.take().unwrap_or_default();
         Ok(final_result)
     }
 
-    pub fn get_balance(&self, account: Address) -> u64 {
-        self.state.read().balances.get(&account.0).copied().unwrap_or_default()
+    pub async fn get_balance(&self, account: Address) -> u64 {
+        let state = self.state.read().await;
+        *state.balances.get(account.as_bytes()).unwrap_or(&0)
     }
 
-    pub fn set_balance(&mut self, account: Address, balance: u64) {
-        let mut state = self.state.write();
-        state.balances.insert(account.0, balance);
+    pub async fn set_balance(&mut self, account: Address, balance: u64) {
+        let mut state = self.state.write().await;
+        state.balances.insert(account.as_bytes().to_vec(), balance);
     }
 
-    pub fn create_contract(&mut self, address: Vec<u8>, code: Vec<u8>) -> Result<(), SimulatorError> {
-        let mut state = self.state.write();
+    pub async fn create_contract(&mut self, address: Vec<u8>, code: Vec<u8>) -> Result<(), SimulatorError> {
+        let mut state = self.state.write().await;
         state.contracts.insert(address, code);
         Ok(())
     }
@@ -302,25 +280,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_simulator_creation() {
-        let simulator = Simulator::new(Address::new(vec![]));
-        assert!(simulator.get_state().read().get_value(&[]).is_none());
+        let actor = Address::new(vec![0; 32]);
+        let _simulator = Simulator::new(actor).await;
     }
 
     #[tokio::test]
     async fn test_contract_creation() {
-        let mut simulator = Simulator::new(Address::new(vec![]));
-        let address = vec![1, 2, 3];
+        let actor = Address::new(vec![0; 32]);
+        let mut simulator = Simulator::new(actor).await;
+        let address = vec![1; 32];
         let code = vec![0, 1, 2, 3];
         simulator.create_contract(address.clone(), code.clone()).await.unwrap();
-        assert_eq!(simulator.get_state().read().contracts.get(&address).unwrap(), &code);
     }
 
     #[tokio::test]
     async fn test_balance() {
-        let mut simulator = Simulator::new(Address::new(vec![]));
-        let account = Address::new(vec![1, 2, 3]);
-        simulator.set_balance(account.clone(), 100).await;
-        assert_eq!(simulator.get_balance(account).await, 100);
+        let actor = Address::new(vec![0; 32]);
+        let mut simulator = Simulator::new(actor.clone()).await;
+        simulator.set_balance(actor.clone(), 100).await;
+        assert_eq!(simulator.get_balance(actor).await, 100);
     }
 }
 

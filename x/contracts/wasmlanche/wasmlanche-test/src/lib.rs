@@ -295,6 +295,36 @@ fn state_get(mut caller: Caller<'_, StoreData>, ptr: u32, len: u32) -> u32 {
     offset
 }
 
+pub struct Context {
+    pub contract_id: [u8; ID_LEN],
+    pub actor: [u8; ID_LEN],
+    pub height: [u8; 8],
+    pub timestamp: [u8; 8],
+    pub action_id: Vec<u8>,
+}
+
+impl Context {
+    pub fn new(contract_id: [u8; ID_LEN], actor: [u8; ID_LEN], height: [u8; 8], timestamp: [u8; 8], action_id: Vec<u8>) -> Self {
+        Self {
+            contract_id,
+            actor,
+            height,
+            timestamp,
+            action_id,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&self.contract_id);
+        bytes.extend_from_slice(&self.actor);
+        bytes.extend_from_slice(&self.height);
+        bytes.extend_from_slice(&self.timestamp);
+        bytes.extend_from_slice(&self.action_id);
+        bytes
+    }
+}
+
 pub struct TestCrate {
     store: Store<StoreData>,
     instance: Instance,
@@ -310,25 +340,20 @@ impl TestCrate {
     // I don't think inlining is actually necessary here since it's a generic method
     #[inline]
     pub fn allocate_params<T: BorshSerialize>(&mut self, params: &T) -> u32 {
-        let contract_id = [1; Address::LEN].into_iter();
-        let actor = [2; Address::LEN].into_iter();
-        let height = 0u64.to_le_bytes().into_iter();
-        let timestamp = 0u64.to_le_bytes().into_iter();
-        let action_id = [1; ID_LEN].into_iter();
+        let contract_id = [1; ID_LEN];
+        let actor = [2; ID_LEN];
+        let height = [3; 8];
+        let timestamp = [4; 8];
+        let action_id = vec![5; 8];
 
-        // this is a hack to create a context since the constructor is private
-        let mut ctx = contract_id
-            .chain(actor)
-            .chain(height)
-            .chain(timestamp)
-            .chain(action_id)
-            .collect();
+        let ctx = Context::new(contract_id, actor, height, timestamp, action_id);
+        let mut bytes = ctx.to_bytes();
 
         params
-            .serialize(&mut ctx)
+            .serialize(&mut bytes)
             .expect("failed to serialize params");
 
-        self.allocate(ctx)
+        self.allocate(bytes)
     }
 
     pub fn store_mut(&mut self) -> &mut Store<StoreData> {
@@ -368,5 +393,31 @@ impl TestCrate {
         self.instance
             .get_typed_func::<UserDefinedFnParam, UserDefinedFnReturn>(&mut self.store, name)
             .unwrap_or_else(|_| panic!("failed to find `{name}` function"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_context_serialization() {
+        let contract_id = [1; ID_LEN];
+        let actor = [2; ID_LEN];
+        let height = [3; 8];
+        let timestamp = [4; 8];
+        let action_id = vec![5; 8];
+
+        let ctx = Context::new(contract_id, actor, height, timestamp, action_id.clone());
+        let bytes = ctx.to_bytes();
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&contract_id);
+        expected.extend_from_slice(&actor);
+        expected.extend_from_slice(&height);
+        expected.extend_from_slice(&timestamp);
+        expected.extend_from_slice(&action_id);
+
+        assert_eq!(bytes, expected);
     }
 }
