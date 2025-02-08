@@ -1,16 +1,23 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::sync::Arc;
+use std::{
+    pin::Pin,
+    future::Future,
+    sync::Arc,
+};
+
 use tokio::sync::RwLock;
+
 use crate::{
     error::Error,
     events::Event,
     gas::GasCounter,
     host::Host,
     simulator::Simulator,
-    types::WasmlAddress,
     state::{StateAccess, StateKey, Error as StateError},
+    types::WasmlAddress,
+    safety::SafetyManager,
 };
 
 #[derive(Debug)]
@@ -20,6 +27,7 @@ pub struct Context {
     timestamp: u64,
     host: Arc<RwLock<Host>>,
     gas_counter: Option<GasCounter>,
+    safety_manager: SafetyManager,
 }
 
 impl Context {
@@ -36,6 +44,7 @@ impl Context {
             timestamp,
             host,
             gas_counter,
+            safety_manager: SafetyManager::new(),
         }
     }
 
@@ -53,7 +62,14 @@ impl Context {
         from: &WasmlAddress,
         to: &WasmlAddress,
         amount: u64,
+        nonce: Option<u64>,
     ) -> Result<(), Error> {
+        // Verify and increment nonce for the sender
+        let nonce = nonce.unwrap_or(0);
+        if let Err(e) = self.safety_manager.verify_and_increment_nonce(from.as_ref(), nonce) {
+            return Err(e);
+        }
+        
         let mut host = self.host.write().await;
         let from_balance = Simulator::get_balance(&*host, from).await;
         if from_balance < amount {
@@ -73,10 +89,21 @@ impl Context {
         args: &[u8],
         gas: u64,
     ) -> Result<Vec<u8>, Error> {
-        let mut host = self.host.write().await;
-        host.execute(&self.actor, target, method, args, gas)
-            .await
-            .map_err(|e| Error::State(e.to_string()))
+        // Check call depth before proceeding
+        self.safety_manager.enter_call()?;
+        
+        let result = {
+            let mut host = self.host.write().await;
+            match Simulator::execute(&mut *host, &self.actor, target, method, args, gas).await {
+                Ok(result) => Ok(result),
+                Err(e) => Err(Error::State(e)),
+            }
+        };
+        
+        // Always exit the call, even if there was an error
+        self.safety_manager.exit_call();
+        
+        result
     }
 
     pub async fn get_events(&self) -> Vec<Event> {
@@ -87,6 +114,16 @@ impl Context {
     pub async fn add_event(&mut self, event: Event) -> Result<(), Error> {
         let mut host = self.host.write().await;
         host.add_event(event).await.map_err(|e| Error::Event(e.to_string()))
+    }
+
+    // Add new methods for nonce management
+    pub fn get_nonce(&self, actor: &WasmlAddress) -> u64 {
+        self.safety_manager.get_nonce(actor.as_ref())
+    }
+
+    // Add method to check protocol version
+    pub fn check_protocol_version(&self, version: u32) -> Result<(), Error> {
+        self.safety_manager.check_protocol_version(version)
     }
 }
 
@@ -109,7 +146,7 @@ impl StateAccess for Context {
         let host = self.host.read().await;
         let key = S::get_key();
         match host.get_state(&key).await {
-            Ok(Some(bytes)) => Ok(Some(borsh::BorshDeserialize::try_from_slice(&bytes)?)),
+            Ok(Some(data)) => Ok(Some(S::try_from_slice(&data)?)),
             Ok(None) => Ok(None),
             Err(e) => Err(StateError::StateError(e.to_string())),
         }
@@ -121,7 +158,7 @@ impl StateAccess for Context {
         let mut host = self.host.write().await;
         let key = S::get_key();
         match host.delete_state(&key).await {
-            Ok(Some(bytes)) => Ok(Some(borsh::BorshDeserialize::try_from_slice(&bytes)?)),
+            Ok(Some(data)) => Ok(Some(S::try_from_slice(&data)?)),
             Ok(None) => Ok(None),
             Err(e) => Err(StateError::StateError(e.to_string())),
         }
@@ -131,11 +168,12 @@ impl StateAccess for Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::host::HostState;
 
-    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
+    #[derive(Debug, PartialEq, borsh::BorshSerialize, borsh::BorshDeserialize)]
     struct TestState {
-        value: String,
+        value: u32,
     }
 
     impl StateKey for TestState {
@@ -146,32 +184,98 @@ mod tests {
 
     #[tokio::test]
     async fn test_state_operations() {
+        let host_state = Arc::new(RwLock::new(HostState::default()));
+        let host = Arc::new(RwLock::new(Host::new(host_state)));
         let mut context = Context::new(
-            WasmlAddress::new(vec![1, 2, 3]),
-            0,
-            0,
-            Arc::new(RwLock::new(Host::new(Arc::new(RwLock::new(HostState::default()))))),
+            WasmlAddress::new(vec![1; 32]),
+            1,
+            1000,
+            host,
             None,
         );
-        let test_state = TestState {
-            value: "test".to_string(),
-        };
 
-        // Test store_state
-        context.store_state(&test_state).await.unwrap();
+        // Test state operations
+        let state = TestState { value: 42 };
+        context.store_state(&state).await.unwrap();
 
-        // Test get_state
-        let retrieved: Option<TestState> = context.get_state().await.unwrap();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().value, "test");
+        let retrieved: Option<TestState> = context.get_state::<TestState>().await.unwrap();
+        assert_eq!(retrieved.unwrap().value, 42);
 
-        // Test delete_state
-        let deleted: Option<TestState> = context.delete_state().await.unwrap();
-        assert!(deleted.is_some());
-        assert_eq!(deleted.unwrap().value, "test");
+        let deleted: Option<TestState> = context.delete_state::<TestState>().await.unwrap();
+        assert_eq!(deleted.unwrap().value, 42);
 
-        // Verify state is deleted
-        let retrieved: Option<TestState> = context.get_state().await.unwrap();
-        assert!(retrieved.is_none());
+        let empty: Option<TestState> = context.get_state::<TestState>().await.unwrap();
+        assert!(empty.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_safety_features() {
+        let host_state = Arc::new(RwLock::new(HostState::default()));
+        let host = Arc::new(RwLock::new(Host::new(host_state)));
+        let mut context = Context::new(
+            WasmlAddress::new(vec![1; 32]),
+            1,
+            1000,
+            host.clone(),
+            None,
+        );
+
+        // Test nonce verification
+        let actor = WasmlAddress::new(vec![2; 32]);
+        assert_eq!(context.get_nonce(&actor), 0);
+
+        // Initialize balance
+        {
+            let mut host = host.write().await;
+            Simulator::set_balance(&mut *host, &actor, 1000).await;
+        }
+
+        // Test transfer with nonce 0
+        let result = context.transfer(
+            &actor,
+            &WasmlAddress::new(vec![3; 32]),
+            100,
+            Some(0),
+        ).await;
+        assert!(result.is_ok());
+        assert_eq!(context.get_nonce(&actor), 1);
+
+        // Test transfer with wrong nonce (should be 1, but we use 0)
+        let result = context.transfer(
+            &actor,
+            &WasmlAddress::new(vec![3; 32]),
+            100,
+            Some(0),
+        ).await;
+        assert!(result.is_err());
+        if let Err(Error::InvalidNonce(_)) = result {
+            // Expected error
+        } else {
+            panic!("Expected InvalidNonce error");
+        }
+
+        // Test call depth by making nested calls up to MAX_CALL_DEPTH
+        // We'll use the safety_manager's call depth directly to simulate nested calls
+        for _ in 0..8 {
+            context.safety_manager.enter_call().unwrap();
+        }
+
+        // Test exceeding max call depth
+        let result = context.safety_manager.enter_call();
+        assert!(result.is_err());
+        if let Err(Error::MaxDepthExceeded(_)) = result {
+            // Expected error
+        } else {
+            panic!("Expected MaxDepthExceeded error");
+        }
+
+        // Reset call depth
+        for _ in 0..8 {
+            context.safety_manager.exit_call();
+        }
+
+        // Test protocol version
+        assert!(context.check_protocol_version(1).is_ok());
+        assert!(context.check_protocol_version(2).is_err());
     }
 }

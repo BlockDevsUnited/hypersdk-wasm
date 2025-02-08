@@ -246,6 +246,12 @@ impl From<&[u8]> for WasmlAddress {
     }
 }
 
+impl AsRef<[u8]> for WasmlAddress {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
 

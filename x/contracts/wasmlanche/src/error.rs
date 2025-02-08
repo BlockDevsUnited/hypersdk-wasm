@@ -19,6 +19,11 @@ pub enum Error {
     NameTooLong(String),
     DataTooLarge(String),
     TooManyEvents(String),
+    InvalidSignature(String),
+    InvalidNonce(String),
+    Unauthorized(String),
+    MaxDepthExceeded(String),
+    InvalidProtocolVersion(String),
 }
 
 impl std::fmt::Display for Error {
@@ -37,6 +42,11 @@ impl std::fmt::Display for Error {
             Error::NameTooLong(e) => write!(f, "Name too long error: {}", e),
             Error::DataTooLarge(e) => write!(f, "Data too large error: {}", e),
             Error::TooManyEvents(e) => write!(f, "Too many events error: {}", e),
+            Error::InvalidSignature(e) => write!(f, "Invalid signature error: {}", e),
+            Error::InvalidNonce(e) => write!(f, "Invalid nonce error: {}", e),
+            Error::Unauthorized(e) => write!(f, "Unauthorized error: {}", e),
+            Error::MaxDepthExceeded(e) => write!(f, "Max depth exceeded error: {}", e),
+            Error::InvalidProtocolVersion(e) => write!(f, "Invalid protocol version error: {}", e),
         }
     }
 }

@@ -16,6 +16,7 @@ pub mod events;
 pub mod gas;
 pub mod host;
 pub mod memory;
+pub mod safety;
 pub mod simulator;
 pub mod state;
 pub mod types;
