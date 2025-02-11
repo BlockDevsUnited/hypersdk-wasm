@@ -144,7 +144,11 @@ where
     }
 
     pub fn querier(&self) -> Arc<Q> {
-        Arc::clone(&self.querier)
+        self.querier.clone()
+    }
+
+    pub fn gas_limit(&self) -> u64 {
+        self.gas_limit
     }
 }
 
