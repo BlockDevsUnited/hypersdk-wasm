@@ -1,147 +1,238 @@
-use wasmtime::{Instance, Store, Func, Val};
-use cosmwasm_std::{Storage, Api, Querier, Binary, Response, Empty};
+use cosmwasm_std::{Storage, Api, Querier, MessageInfo, QueryRequest, ContractResult, Empty, Binary, to_json_binary, from_json};
+use wasmtime::{Store, Module, Engine, Linker, Instance, Val};
+use anyhow::Result;
+use serde::Serialize;
 
-use crate::host::HostEnv;
 use crate::error::ExecutorError;
+use crate::host::{self, HostEnv};
+use crate::imports::define_imports;
 
 pub struct Executor<S, A, Q>
 where
-    S: Storage + Clone + Send + Sync + 'static,
-    A: Api + Clone + Send + Sync + 'static,
-    Q: Querier + Clone + Send + Sync + 'static,
+    S: Storage + Clone + 'static,
+    A: Api + Clone + 'static,
+    Q: Querier + Clone + 'static,
 {
-    storage: S,
-    api: A,
-    querier: Q,
-    gas_limit: u64,
+    store: Store<HostEnv<S, A, Q>>,
     instance: Instance,
+    gas_limit: u64,
+    module: Module,
+    linker: Linker<HostEnv<S, A, Q>>,
 }
 
 impl<S, A, Q> Executor<S, A, Q>
 where
-    S: Storage + Clone + Send + Sync + 'static,
-    A: Api + Clone + Send + Sync + 'static,
-    Q: Querier + Clone + Send + Sync + 'static,
+    S: Storage + Clone + 'static,
+    A: Api + Clone + 'static,
+    Q: Querier + Clone + 'static,
 {
     pub fn new(
         storage: S,
         api: A,
         querier: Q,
         gas_limit: u64,
-        instance: Instance,
+        engine: Engine,
+        module: Module,
     ) -> Self {
+        let mut store = Store::new(
+            &engine,
+            HostEnv::new(storage, api, querier, gas_limit),
+        );
+
+        let mut linker = Linker::new(&engine);
+        define_imports(&mut linker, &mut store, module.clone()).unwrap();
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+
+        // Get memory from instance and set it in the host environment
+        if let Some(memory) = instance.get_export(&mut store, "memory").and_then(|e| e.into_memory()) {
+            store.data_mut().set_memory(memory);
+        }
+
         Self {
-            storage,
-            api,
-            querier,
-            gas_limit,
+            store,
             instance,
+            gas_limit,
+            module,
+            linker,
         }
     }
 
-    fn get_wasm_func(&self, store: &mut Store<HostEnv<S, A, Q>>, name: &str) -> Result<Func, ExecutorError> {
-        self.instance
-            .get_func(store, name)
-            .ok_or_else(|| ExecutorError::ExecutionError(format!("Function {} not found", name)))
-    }
-
-    fn write_msg_to_memory(&self, store: &mut Store<HostEnv<S, A, Q>>, msg: &[u8]) -> Result<(usize, usize), ExecutorError> {
-        let memory = {
-            let host_env = store.data();
-            host_env.get_memory()?.clone()
-        };
-
-        let len = msg.len();
-        let current_size = memory.data_size(&*store);
-        let ptr = current_size as usize;
-        let needed_pages = ((ptr + len) as u32 / 65536 + 1) as u64;
-        let current_pages = memory.size(&*store);
-        
-        if needed_pages > current_pages {
-            let pages_to_add = needed_pages - current_pages;
-            memory.grow(&mut *store, pages_to_add)
-                .map_err(|e| ExecutorError::MemoryAccessError(format!("Failed to grow memory: {}", e)))?;
+    pub fn instantiate(
+        &mut self,
+        msg: &[u8],
+        info: &MessageInfo,
+        gas_limit: Option<u64>,
+    ) -> Result<Vec<u8>, ExecutorError> {
+        if let Some(gas) = gas_limit {
+            self.store.data_mut().set_gas_limit(gas);
         }
-        
-        memory.write(&mut *store, ptr, msg)
-            .map_err(|e| ExecutorError::MemoryAccessError(format!("Failed to write to memory: {}", e)))?;
-        
-        Ok((ptr, len))
+
+        let instantiate = self.instance
+            .get_typed_func::<(i32, i32, i32), i32>(&mut self.store, "instantiate")
+            .map_err(|e| ExecutorError::RuntimeError(format!("Failed to get instantiate function: {}", e)))?;
+
+        let (msg_ptr, msg_len) = host::write_memory(&mut self.store, msg)?;
+        let (info_ptr, info_len) = host::write_memory(&mut self.store, &to_json_binary(info).unwrap())?;
+        let (gas_info_ptr, _gas_info_len) = host::write_memory(&mut self.store, &[0u8; 4])?;
+
+        let result_ptr = instantiate
+            .call(&mut self.store, (msg_ptr as i32, info_ptr as i32, gas_info_ptr as i32))
+            .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+
+        host::read_memory(&mut self.store, result_ptr as usize, msg_len.max(info_len))
     }
 
-    fn call_wasm_function(&self, store: &mut Store<HostEnv<S, A, Q>>, func: Func, ptr: usize, len: usize) -> Result<(usize, usize), ExecutorError> {
-        let mut results = [Val::I32(0), Val::I32(0)];
-        func.call(&mut *store, &[Val::I32(ptr as i32), Val::I32(len as i32)], &mut results)
-            .map_err(|e| ExecutorError::ExecutionError(format!("Failed to call function: {}", e)))?;
-
-        match (&results[0], &results[1]) {
-            (Val::I32(ptr), Val::I32(len)) => Ok((*ptr as usize, *len as usize)),
-            _ => Err(ExecutorError::ExecutionError("Invalid return type".to_string())),
+    pub fn execute(
+        &mut self,
+        msg: &[u8],
+        info: &MessageInfo,
+        gas_limit: Option<u64>,
+    ) -> Result<Vec<u8>, ExecutorError> {
+        if let Some(gas) = gas_limit {
+            self.store.data_mut().set_gas_limit(gas);
         }
+
+        let execute = self.instance
+            .get_typed_func::<(i32, i32, i32), i32>(&mut self.store, "execute")
+            .map_err(|e| ExecutorError::RuntimeError(format!("Failed to get execute function: {}", e)))?;
+
+        let (msg_ptr, msg_len) = host::write_memory(&mut self.store, msg)?;
+        let (info_ptr, info_len) = host::write_memory(&mut self.store, &to_json_binary(info).unwrap())?;
+        let (gas_info_ptr, _gas_info_len) = host::write_memory(&mut self.store, &[0u8; 4])?;
+
+        let result_ptr = execute
+            .call(&mut self.store, (msg_ptr as i32, info_ptr as i32, gas_info_ptr as i32))
+            .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
+
+        host::read_memory(&mut self.store, result_ptr as usize, msg_len.max(info_len))
     }
 
-    pub fn instantiate(&mut self, store: &mut Store<HostEnv<S, A, Q>>, msg: &[u8]) -> Result<(usize, usize), ExecutorError> {
-        let func = self.get_wasm_func(store, "instantiate")?;
-        let (ptr, len) = self.write_msg_to_memory(store, msg)?;
-        self.call_wasm_function(store, func, ptr, len)
-    }
+    pub fn query<C: Serialize>(
+        &mut self,
+        query: &QueryRequest<C>,
+    ) -> Result<ContractResult<Binary>, ExecutorError> {
+        let query_func = self.instance
+            .get_typed_func::<(i32, i32, i64), i32>(&mut self.store, "query")
+            .map_err(|e| ExecutorError::RuntimeError(format!("Failed to get query function: {}", e)))?;
 
-    pub fn execute(&mut self, store: &mut Store<HostEnv<S, A, Q>>, msg: &[u8]) -> Result<(usize, usize), ExecutorError> {
-        let func = self.get_wasm_func(store, "execute")?;
-        let (ptr, len) = self.write_msg_to_memory(store, msg)?;
-        self.call_wasm_function(store, func, ptr, len)
-    }
+        let query_msg = to_json_binary(query).unwrap();
+        let (query_ptr, query_len) = host::write_memory(&mut self.store, &query_msg)?;
+        let (gas_info_ptr, _gas_info_len) = host::write_memory(&mut self.store, &[0u8; 4])?;
 
-    pub fn query(&mut self, store: &mut Store<HostEnv<S, A, Q>>, msg: &[u8]) -> Result<Binary, ExecutorError> {
-        let func = self.get_wasm_func(store, "query")?;
-        let (ptr, len) = self.write_msg_to_memory(store, msg)?;
-        let (result_ptr, result_len) = self.call_wasm_function(store, func, ptr, len)?;
-        store.data().read_binary(&*store, result_ptr, result_len)
-    }
+        let result_ptr = query_func
+            .call(&mut self.store, (query_ptr as i32, gas_info_ptr as i32, self.gas_limit as i64))
+            .map_err(|e| ExecutorError::RuntimeError(e.to_string()))?;
 
-    pub fn read_response(&self, store: &Store<HostEnv<S, A, Q>>, ptr: usize, len: usize) -> Result<Response<Empty>, ExecutorError> {
-        store.data().read_response(&*store, ptr, len)
+        let result_data = host::read_memory(&mut self.store, result_ptr as usize, query_len)?;
+        
+        from_json(&result_data)
+            .map_err(|e| ExecutorError::RuntimeError(format!("Failed to deserialize response: {}", e)))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{ThreadSafeStorage, ThreadSafeApi, ThreadSafeQuerier};
-    use wasmtime::{Engine, Module};
+    use cosmwasm_std::testing::{MockApi, MockQuerier};
+    use cosmwasm_std::{MemoryStorage, Order, Record, Addr};
+    use std::sync::{Arc, RwLock};
+
+    #[derive(Clone)]
+    struct ClonableStorage {
+        inner: Arc<RwLock<MemoryStorage>>
+    }
+    
+    impl ClonableStorage {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(RwLock::new(MemoryStorage::default()))
+            }
+        }
+    }
+    
+    impl Storage for ClonableStorage {
+        fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+            self.inner.read().unwrap().get(key)
+        }
+
+        fn set(&mut self, key: &[u8], value: &[u8]) {
+            self.inner.write().unwrap().set(key, value)
+        }
+
+        fn remove(&mut self, key: &[u8]) {
+            self.inner.write().unwrap().remove(key)
+        }
+
+        fn range<'a>(&'a self, start: Option<&[u8]>, end: Option<&[u8]>, order: Order) -> Box<dyn Iterator<Item = Record> + 'a> {
+            let inner = self.inner.read().unwrap();
+            let range = inner.range(start, end, order);
+            let vec: Vec<_> = range.collect();
+            Box::new(vec.into_iter())
+        }
+    }
+
+    #[derive(Clone)]
+    struct ClonableQuerier {
+        inner: Arc<RwLock<MockQuerier>>
+    }
+
+    impl ClonableQuerier {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(RwLock::new(MockQuerier::new(&[])))
+            }
+        }
+    }
+
+    impl Querier for ClonableQuerier {
+        fn raw_query(&self, bin_request: &[u8]) -> cosmwasm_std::QuerierResult {
+            let inner = self.inner.read().unwrap();
+            inner.raw_query(bin_request)
+        }
+    }
 
     #[test]
     fn test_executor() {
-        let storage = ThreadSafeStorage::default();
-        let api = ThreadSafeApi::default();
-        let querier = ThreadSafeQuerier::default();
-        let gas_limit = 1_000_000;
-
         let engine = Engine::default();
-        let host_env = HostEnv::new(storage.clone(), api.clone(), querier.clone(), gas_limit);
-        let mut store = Store::new(&engine, host_env);
-
-        // Create a simple test contract
-        let test_wasm = wat::parse_str(r#"
+        let wasm = wat::parse_str(r#"
             (module
-                (memory (export "memory") 1)
-                (data (i32.const 0) "{\"data\":null,\"events\":[],\"messages\":[],\"attributes\":[]}")
-                (func $instantiate (export "instantiate") (param i32 i32) (result i32 i32)
-                    i32.const 0    ;; ptr to response
-                    i32.const 55   ;; length of response
-                )
+                (type $t0 (func (param i32 i32 i32) (result i32)))
+                (type $t1 (func (param i32)))
+                (type $t2 (func (param i32) (result i32)))
+                
+                (import "env" "db_read" (func $db_read (param i32) (result i32)))
+                (import "env" "db_write" (func $db_write (param i32 i32)))
+                (import "env" "db_remove" (func $db_remove (param i32)))
+                (import "env" "debug" (func $debug (param i32)))
+                (import "env" "abort" (func $abort (param i32)))
+                
+                (memory $memory (export "memory") 1)
+                (func $allocate (export "allocate") (param i32) (result i32) (local.get 0))
+                (func $deallocate (export "deallocate") (param i32))
+                (func $instantiate (export "instantiate") (param i32 i32 i32) (result i32) (i32.const 0))
+                (func $execute (export "execute") (param i32 i32 i32) (result i32) (i32.const 0))
+                (func $query (export "query") (param i32 i32 i64) (result i32) (i32.const 0))
             )
-        "#).expect("Failed to parse WAT");
+        "#).unwrap();
 
-        let module = Module::new(&engine, &test_wasm).expect("Failed to create module");
-        let instance = Instance::new(&mut store, &module, &[]).expect("Failed to create instance");
+        let module = Module::new(&engine, &wasm).unwrap();
+        
+        let mut executor = Executor::new(
+            ClonableStorage::new(),
+            MockApi::default(),
+            ClonableQuerier::new(),
+            1_000_000,
+            engine,
+            module,
+        );
 
-        // Get the memory from the instance and update the host environment
-        let memory = instance.get_memory(&mut store, "memory").expect("Failed to get memory");
-        store.data_mut().set_memory(memory);
+        let msg = b"{}";
+        let info = MessageInfo {
+            sender: Addr::unchecked("sender"),
+            funds: vec![],
+        };
 
-        let mut executor = Executor::new(storage, api, querier, gas_limit, instance);
-        let result = executor.instantiate(&mut store, b"{}");
+        let result = executor.instantiate(msg, &info, None);
         assert!(result.is_ok());
     }
 }

@@ -1,83 +1,87 @@
 use thiserror::Error;
+use std::error::Error as StdError;
 
 #[derive(Error, Debug)]
 pub enum ExecutorError {
-    #[error("Contract instantiation failed: {0}")]
-    Instantiation(String),
+    #[error("Memory access error: {0}")]
+    MemoryAccessError(String),
 
-    #[error("Contract execution failed: {0}")]
-    Execution(String),
+    #[error("No memory available")]
+    NoMemory,
 
-    #[error("Gas limit exceeded: {0}")]
-    GasLimit(String),
+    #[error("No WASM module loaded")]
+    NoModule,
 
-    #[error("Serialization error: {0}")]
-    Serialization(String),
+    #[error("Module error: {0}")]
+    ModuleError(String),
+
+    #[error("Instantiation error: {0}")]
+    InstantiationError(String),
 
     #[error("Entry point not found: {0}")]
-    EntryPoint(String),
+    EntryPointNotFound(String),
 
-    #[error("Memory access error: {0}")]
-    Memory(String),
+    #[error("Runtime error: {0}")]
+    RuntimeError(String),
 
-    #[error("Host function error: {0}")]
-    HostFunction(String),
-
-    #[error("Storage error: {0}")]
-    Storage(String),
-
-    #[error("Query error: {0}")]
-    Query(String),
-
-    #[error("Contract not found: {0}")]
-    ContractNotFound(String),
-
-    #[error("Instance not found")]
-    InstanceNotFound,
-}
-
-#[derive(Error, Debug)]
-pub enum HostError {
-    #[error("Memory allocation failed: {0}")]
-    Allocation(String),
-
-    #[error("Memory access failed: {0}")]
-    MemoryAccess(String),
-
-    #[error("Gas limit exceeded: {0}")]
-    GasLimit(String),
-
-    #[error("Storage error: {0}")]
-    Storage(String),
+    #[error("Execution error: {0}")]
+    ExecutionError(String),
 
     #[error("API error: {0}")]
-    Api(String),
+    ApiError(String),
 
-    #[error("Query error: {0}")]
-    Query(String),
-}
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
 
-impl From<HostError> for ExecutorError {
-    fn from(err: HostError) -> Self {
-        match err {
-            HostError::Allocation(msg) => ExecutorError::Memory(msg),
-            HostError::MemoryAccess(msg) => ExecutorError::Memory(msg),
-            HostError::GasLimit(msg) => ExecutorError::GasLimit(msg),
-            HostError::Storage(msg) => ExecutorError::Storage(msg),
-            HostError::Api(msg) => ExecutorError::HostFunction(msg),
-            HostError::Query(msg) => ExecutorError::Query(msg),
-        }
-    }
+    #[error("Deserialization error: {0}")]
+    DeserializationError(String),
+
+    #[error("Memory allocation error: {0}")]
+    MemoryError(String),
+
+    #[error("No contract loaded")]
+    NoContract,
+
+    #[error("Gas limit exceeded")]
+    GasLimitExceeded,
 }
 
 impl From<wasmtime::Error> for ExecutorError {
     fn from(err: wasmtime::Error) -> Self {
-        ExecutorError::Execution(err.to_string())
+        ExecutorError::ExecutionError(err.to_string())
     }
 }
 
 impl From<serde_json::Error> for ExecutorError {
     fn from(err: serde_json::Error) -> Self {
-        ExecutorError::Serialization(err.to_string())
+        ExecutorError::SerializationError(err.to_string())
+    }
+}
+
+impl From<cosmwasm_std::StdError> for ExecutorError {
+    fn from(err: cosmwasm_std::StdError) -> Self {
+        ExecutorError::ApiError(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmwasm_std::StdError;
+
+    #[test]
+    fn test_error_conversion() {
+        // Create a wasmtime error using anyhow
+        let wasm_err = wasmtime::Error::msg("test error");
+        let exec_err: ExecutorError = wasm_err.into();
+        assert!(matches!(exec_err, ExecutorError::ExecutionError(_)));
+
+        let std_err = StdError::generic_err("test error");
+        let contract_err: ExecutorError = std_err.into();
+        assert!(matches!(contract_err, ExecutorError::ApiError(_)));
+
+        let json_err = serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::Other, "test error"));
+        let ser_err: ExecutorError = json_err.into();
+        assert!(matches!(ser_err, ExecutorError::SerializationError(_)));
     }
 }

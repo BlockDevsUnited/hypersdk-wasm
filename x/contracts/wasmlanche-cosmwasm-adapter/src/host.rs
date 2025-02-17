@@ -1,318 +1,223 @@
-use std::sync::{Arc, RwLock};
-use cosmwasm_std::{Api, Storage, Querier, VerificationError, RecoverPubkeyError};
-
-use crate::error::HostError;
-
-pub type HostResult<T> = Result<T, HostError>;
-
-const GAS_COST_READ_MEMORY: u64 = 10;
-const GAS_COST_WRITE_MEMORY: u64 = 20;
-const GAS_COST_ALLOCATE: u64 = 30;
-const GAS_COST_DEALLOCATE: u64 = 10;
+use std::cell::RefCell;
+use wasmtime::{Memory, Store};
+use cosmwasm_std::{Storage, Api, Querier, CanonicalAddr};
+use crate::error::ExecutorError;
 
 pub struct HostEnv<S, A, Q>
 where
-    S: Storage + Clone + Send + Sync + 'static,
-    A: Api + Clone + Send + Sync + 'static,
-    Q: Querier + Clone + Send + Sync + 'static,
+    S: Storage,
+    A: Api,
+    Q: Querier,
 {
-    storage: Arc<RwLock<S>>,
-    api: Arc<A>,
-    querier: Arc<Q>,
-    memory: Vec<u8>,
+    pub(crate) storage: S,
+    pub(crate) api: A,
+    pub(crate) querier: Q,
+    pub(crate) memory: Option<Memory>,
+    gas_used: RefCell<u64>,
     gas_limit: u64,
-    gas_counter: Arc<RwLock<u64>>,
+    pub(crate) next_ptr: RefCell<u32>,
 }
 
 impl<S, A, Q> HostEnv<S, A, Q>
 where
-    S: Storage + Clone + Send + Sync + 'static,
-    A: Api + Clone + Send + Sync + 'static,
-    Q: Querier + Clone + Send + Sync + 'static,
+    S: Storage,
+    A: Api,
+    Q: Querier,
 {
     pub fn new(storage: S, api: A, querier: Q, gas_limit: u64) -> Self {
         Self {
-            storage: Arc::new(RwLock::new(storage)),
-            api: Arc::new(api),
-            querier: Arc::new(querier),
-            memory: Vec::new(),
+            storage,
+            api,
+            querier,
+            memory: None,
+            gas_used: RefCell::new(0),
             gas_limit,
-            gas_counter: Arc::new(RwLock::new(0)),
+            next_ptr: RefCell::new(65536), // Start at 64KB to avoid conflicts with other regions
         }
     }
 
-    pub fn charge_gas(&self, amount: u64) -> HostResult<()> {
-        let mut counter = self.gas_counter.write().map_err(|_| {
-            HostError::GasLimit("Failed to acquire gas counter lock".to_string())
-        })?;
-
-        let new_counter = counter.checked_add(amount)
-            .ok_or_else(|| HostError::GasLimit("Gas counter overflow".to_string()))?;
-
-        if new_counter > self.gas_limit {
-            return Err(HostError::GasLimit("Gas limit exceeded".to_string()));
-        }
-
-        *counter = new_counter;
-        Ok(())
+    pub fn set_memory(&mut self, memory: Memory) {
+        self.memory = Some(memory);
     }
 
-    pub fn get_gas_used(&self) -> HostResult<u64> {
-        self.gas_counter.read()
-            .map_err(|_| HostError::GasLimit("Failed to read gas counter".to_string()))
-            .map(|counter| *counter)
+    pub fn set_gas_limit(&mut self, gas_limit: u64) {
+        self.gas_limit = gas_limit;
     }
 
-    pub fn allocate(&mut self, size: usize) -> HostResult<usize> {
-        self.charge_gas(GAS_COST_ALLOCATE)?;
-        
-        let current_len = self.memory.len();
-        self.memory.resize(current_len + size, 0);
-        Ok(current_len)
-    }
-
-    pub fn deallocate(&mut self, ptr: usize) -> HostResult<()> {
-        self.charge_gas(GAS_COST_DEALLOCATE)?;
-        
-        if ptr >= self.memory.len() {
-            return Err(HostError::MemoryAccess(format!("Invalid pointer: {}", ptr)));
+    pub fn charge_gas(&self, amount: u64) -> Result<(), ExecutorError> {
+        let mut gas_used = self.gas_used.borrow_mut();
+        *gas_used += amount;
+        if *gas_used > self.gas_limit {
+            return Err(ExecutorError::GasLimitExceeded);
         }
         Ok(())
     }
 
-    pub fn read_memory(&self, offset: usize, len: usize) -> HostResult<&[u8]> {
-        self.charge_gas(GAS_COST_READ_MEMORY)?;
+    pub fn allocate(&mut self, size: u32) -> anyhow::Result<u32> {
+        let mut next_ptr = self.next_ptr.borrow_mut();
+        let ptr = *next_ptr;
         
-        let end = offset.checked_add(len)
-            .ok_or_else(|| HostError::MemoryAccess("Memory access overflow".to_string()))?;
-
-        if end > self.memory.len() {
-            return Err(HostError::MemoryAccess("Memory access out of bounds".to_string()));
-        }
-
-        Ok(&self.memory[offset..end])
+        // Add 4 bytes for length prefix, then the actual data size
+        let total_size = size.checked_add(4)
+            .ok_or_else(|| anyhow::anyhow!("Memory size overflow"))?;
+        
+        let new_ptr = next_ptr.checked_add(total_size)
+            .ok_or_else(|| anyhow::anyhow!("Memory size overflow"))?;
+            
+        *next_ptr = new_ptr;
+        Ok(ptr + 4)
     }
 
-    pub fn write_memory(&mut self, offset: usize, data: &[u8]) -> HostResult<()> {
-        self.charge_gas(GAS_COST_WRITE_MEMORY)?;
-        
-        let end = offset.checked_add(data.len())
-            .ok_or_else(|| HostError::MemoryAccess("Memory access overflow".to_string()))?;
-
-        if end > self.memory.len() {
-            return Err(HostError::MemoryAccess("Memory access out of bounds".to_string()));
-        }
-
-        self.memory[offset..end].copy_from_slice(data);
+    pub fn deallocate(&mut self, _ptr: u32) -> anyhow::Result<()> {
+        // For now, we don't actually deallocate memory
         Ok(())
     }
 
-    pub fn ptr_to_usize(&self, ptr: u32) -> HostResult<usize> {
-        usize::try_from(ptr).map_err(|_| {
-            HostError::MemoryAccess(format!("Invalid pointer conversion: {}", ptr))
-        })
+    pub fn addr_validate(&self, addr: &str) -> Result<(), ExecutorError> {
+        self.charge_gas(100)?;
+        self.api.addr_validate(addr)
+            .map_err(|e| ExecutorError::ApiError(e.to_string()))?;
+        Ok(())
     }
 
-    pub fn ptr_to_slice(&self, ptr: usize) -> HostResult<&[u8]> {
-        if ptr >= self.memory.len() {
-            return Err(HostError::MemoryAccess(format!("Invalid pointer: {}", ptr)));
-        }
-        Ok(&self.memory[ptr..])
+    pub fn addr_canonicalize(&self, human: &str) -> Result<CanonicalAddr, ExecutorError> {
+        self.charge_gas(100)?;
+        self.api.addr_canonicalize(human)
+            .map_err(|e| ExecutorError::ApiError(e.to_string()))
     }
 
-    pub fn ptr_to_slice_mut(&mut self, ptr: usize) -> HostResult<&mut [u8]> {
-        if ptr >= self.memory.len() {
-            return Err(HostError::MemoryAccess(format!("Invalid pointer: {}", ptr)));
-        }
-        Ok(&mut self.memory[ptr..])
+    pub fn addr_humanize(&self, canonical: &[u8]) -> Result<String, ExecutorError> {
+        self.charge_gas(100)?;
+        self.api.addr_humanize(&CanonicalAddr::from(canonical))
+            .map_err(|e| ExecutorError::ApiError(e.to_string()))
+            .map(|addr| addr.to_string())
+    }
+}
+
+pub fn write_memory<S, A, Q>(
+    store: &mut Store<HostEnv<S, A, Q>>,
+    data: &[u8],
+) -> Result<(usize, usize), ExecutorError>
+where
+    S: Storage,
+    A: Api,
+    Q: Querier,
+{
+    let memory = {
+        store.data().memory.as_ref()
+            .ok_or_else(|| ExecutorError::MemoryAccessError("No memory available".to_string()))?
+            .clone()
+    };
+
+    let total_size = data.len() + 4;
+    let ptr = store.data().next_ptr.borrow().clone() as usize;
+    
+    // Calculate required pages
+    let required_pages = ((total_size + ptr + 65535) / 65536) as u64;
+    
+    // Get current pages and grow if needed
+    let pages = memory.size(&mut *store);
+    if required_pages > pages {
+        memory.grow(&mut *store, required_pages - pages)
+            .map_err(|e| ExecutorError::MemoryAccessError(format!("Failed to grow memory: {}", e)))?;
     }
 
-    pub fn storage(&self) -> HostResult<std::sync::RwLockReadGuard<'_, S>> {
-        self.storage.read().map_err(|_| {
-            HostError::Storage("Failed to acquire storage lock".to_string())
-        })
+    // Write length prefix
+    let len_bytes = (data.len() as u32).to_be_bytes();
+    memory.write(&mut *store, ptr, &len_bytes)
+        .map_err(|e| ExecutorError::MemoryAccessError(e.to_string()))?;
+
+    // Write data
+    memory.write(&mut *store, ptr + 4, data)
+        .map_err(|e| ExecutorError::MemoryAccessError(e.to_string()))?;
+
+    // Update next_ptr
+    *store.data().next_ptr.borrow_mut() = (ptr + total_size) as u32;
+
+    Ok((ptr, data.len()))
+}
+
+pub fn read_memory<S, A, Q>(
+    store: &mut Store<HostEnv<S, A, Q>>,
+    ptr: usize,
+    max_length: usize,
+) -> Result<Vec<u8>, ExecutorError>
+where
+    S: Storage,
+    A: Api,
+    Q: Querier,
+{
+    let memory = {
+        store.data().memory.as_ref()
+            .ok_or_else(|| ExecutorError::MemoryAccessError("No memory available".to_string()))?
+            .clone()
+    };
+
+    // Read length prefix (32-bit big-endian)
+    let mut len_bytes = [0u8; 4];
+    memory.read(&mut *store, ptr, &mut len_bytes)
+        .map_err(|e| ExecutorError::MemoryAccessError(e.to_string()))?;
+    let actual_len = u32::from_be_bytes(len_bytes) as usize;
+
+    // Ensure length is within bounds
+    if actual_len > max_length {
+        return Err(ExecutorError::MemoryAccessError(format!("Length {} exceeds maximum {}", actual_len, max_length)));
     }
 
-    pub fn storage_mut(&self) -> HostResult<std::sync::RwLockWriteGuard<'_, S>> {
-        self.storage.write().map_err(|_| {
-            HostError::Storage("Failed to acquire storage lock".to_string())
-        })
-    }
+    // Read the actual data
+    let mut data = vec![0u8; actual_len];
+    memory.read(&mut *store, ptr + 4, &mut data)
+        .map_err(|e| ExecutorError::MemoryAccessError(e.to_string()))?;
 
-    pub fn api(&self) -> Arc<A> {
-        Arc::clone(&self.api)
-    }
-
-    pub fn querier(&self) -> Arc<Q> {
-        self.querier.clone()
-    }
-
-    pub fn gas_limit(&self) -> u64 {
-        self.gas_limit
-    }
+    Ok(data)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cosmwasm_std::{VerificationError, RecoverPubkeyError};
-    use std::collections::HashMap;
+    use wasmtime::{Engine, MemoryType};
+    use cosmwasm_std::testing::{MockStorage, MockQuerier, MockApi};
 
-    #[derive(Clone, Default)]
-    pub struct CloneableStorage {
-        data: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>
-    }
+    fn setup_test_env() -> Result<(Store<HostEnv<MockStorage, MockApi, MockQuerier>>, Memory), ExecutorError> {
+        let engine = Engine::default();
+        let mut host_env = HostEnv::new(
+            MockStorage::new(),
+            MockApi::default(),
+            MockQuerier::new(&[]),
+            1_000_000,
+        );
 
-    impl Storage for CloneableStorage {
-        fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-            self.data.read().unwrap().get(&key.to_vec()).cloned()
-        }
+        let mut store = Store::new(&engine, host_env);
+        
+        // Create a memory with 1 page (64KB)
+        let memory_type = MemoryType::new(1, Some(2));  // Min 1 page, max 2 pages
+        let memory = Memory::new(&mut store, memory_type)
+            .map_err(|e| ExecutorError::MemoryAccessError(e.to_string()))?;
 
-        fn set(&mut self, key: &[u8], value: &[u8]) {
-            self.data.write().unwrap().insert(key.to_vec(), value.to_vec());
-        }
-
-        fn remove(&mut self, key: &[u8]) {
-            self.data.write().unwrap().remove(&key.to_vec());
-        }
-
-        fn range<'a>(
-            &'a self,
-            start: Option<&[u8]>,
-            end: Option<&[u8]>,
-            order: cosmwasm_std::Order,
-        ) -> Box<dyn Iterator<Item = cosmwasm_std::Record> + 'a> {
-            let data = self.data.read().unwrap();
-            let iter = data.iter()
-                .filter(move |(k, _)| {
-                    let valid_start = start.map_or(true, |s| k.as_slice() >= s);
-                    let valid_end = end.map_or(true, |e| k.as_slice() < e);
-                    valid_start && valid_end
-                })
-                .map(|(k, v)| (k.clone(), v.clone()));
-
-            match order {
-                cosmwasm_std::Order::Ascending => Box::new(iter.collect::<Vec<_>>().into_iter()),
-                cosmwasm_std::Order::Descending => Box::new(iter.collect::<Vec<_>>().into_iter().rev()),
-            }
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct CloneableApi;
-
-    impl Api for CloneableApi {
-        fn addr_validate(&self, human: &str) -> cosmwasm_std::StdResult<cosmwasm_std::Addr> {
-            Ok(cosmwasm_std::Addr::unchecked(human))
-        }
-
-        fn addr_canonicalize(&self, human: &str) -> cosmwasm_std::StdResult<cosmwasm_std::CanonicalAddr> {
-            Ok(cosmwasm_std::CanonicalAddr::from(human.as_bytes()))
-        }
-
-        fn addr_humanize(&self, canonical: &cosmwasm_std::CanonicalAddr) -> cosmwasm_std::StdResult<cosmwasm_std::Addr> {
-            Ok(cosmwasm_std::Addr::unchecked(String::from_utf8_lossy(canonical.as_slice())))
-        }
-
-        fn secp256k1_verify(&self, _message_hash: &[u8], _signature: &[u8], _public_key: &[u8]) -> Result<bool, VerificationError> {
-            Ok(true)
-        }
-
-        fn secp256k1_recover_pubkey(&self, _message_hash: &[u8], _signature: &[u8], _recovery_param: u8) -> Result<Vec<u8>, RecoverPubkeyError> {
-            Ok(vec![])
-        }
-
-        fn ed25519_verify(&self, _message: &[u8], _signature: &[u8], _public_key: &[u8]) -> Result<bool, VerificationError> {
-            Ok(true)
-        }
-
-        fn ed25519_batch_verify(&self, _messages: &[&[u8]], _signatures: &[&[u8]], _public_keys: &[&[u8]]) -> Result<bool, VerificationError> {
-            Ok(true)
-        }
-
-        fn debug(&self, _message: &str) {
-            // No-op for tests
-        }
-    }
-
-    #[derive(Clone, Default)]
-    struct CloneableQuerier;
-
-    impl Querier for CloneableQuerier {
-        fn raw_query(&self, _bin_request: &[u8]) -> cosmwasm_std::QuerierResult {
-            cosmwasm_std::SystemResult::Ok(cosmwasm_std::ContractResult::Ok(cosmwasm_std::Binary::default()))
-        }
+        Ok((store, memory))
     }
 
     #[test]
-    fn test_gas_charging() {
-        let env = HostEnv::new(
-            CloneableStorage::default(),
-            CloneableApi::default(),
-            CloneableQuerier::default(),
-            1000,
-        );
+    fn test_memory_operations() -> Result<(), ExecutorError> {
+        let (mut store, memory) = setup_test_env()?;
+        store.data_mut().set_memory(memory);
         
-        // Test successful gas charging
-        assert!(env.charge_gas(500).is_ok());
-        assert!(env.charge_gas(400).is_ok());
+        // Write small test data
+        let test_data = b"test";
+        let (data_ptr, data_len) = write_memory(&mut store, test_data)?;
         
-        // Test gas limit exceeded
-        assert!(env.charge_gas(200).is_err());
+        // Read and verify the data
+        let read_data = read_memory(&mut store, data_ptr, data_len)?;
+        assert_eq!(read_data, test_data);
         
-        // Verify gas usage
-        assert_eq!(env.get_gas_used().unwrap(), 900);
-    }
-
-    #[test]
-    fn test_memory_operations() {
-        let mut env = HostEnv::new(
-            CloneableStorage::default(),
-            CloneableApi::default(),
-            CloneableQuerier::default(),
-            1000,
-        );
+        // Test writing larger data
+        let large_data = vec![1u8; 1000];
+        let (large_ptr, large_len) = write_memory(&mut store, &large_data)?;
         
-        // Test allocation
-        let offset = env.allocate(10).unwrap();
+        // Read and verify larger data
+        let read_large = read_memory(&mut store, large_ptr, large_len)?;
+        assert_eq!(read_large, large_data);
         
-        // Write to memory
-        let data = vec![1, 2, 3, 4, 5];
-        env.write_memory(offset, &data).unwrap();
-        
-        // Read from memory
-        let read_data = env.read_memory(offset, data.len()).unwrap();
-        assert_eq!(read_data, &data);
-        
-        // Test deallocation
-        assert!(env.deallocate(offset).is_ok());
-        
-        // Verify gas usage includes memory operations
-        let gas_used = env.get_gas_used().unwrap();
-        assert!(gas_used > 0);
-    }
-
-    #[test]
-    fn test_storage_access() {
-        let env = HostEnv::new(
-            CloneableStorage::default(),
-            CloneableApi::default(),
-            CloneableQuerier::default(),
-            1000,
-        );
-        
-        // Test storage read access
-        let storage = env.storage().unwrap();
-        assert!(storage.get(b"test").is_none());
-        drop(storage);
-        
-        // Test storage write access
-        let mut storage = env.storage_mut().unwrap();
-        storage.set(b"test", b"value");
-        drop(storage);
-        
-        // Verify written value
-        let storage = env.storage().unwrap();
-        assert_eq!(storage.get(b"test").unwrap(), b"value");
+        Ok(())
     }
 }

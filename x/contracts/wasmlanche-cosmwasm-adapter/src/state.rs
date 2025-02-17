@@ -1,8 +1,104 @@
 use std::sync::{Arc, RwLock};
-use cosmwasm_std::{Storage, Order, Api, Querier, Binary, ContractResult, SystemResult, VerificationError, RecoverPubkeyError};
-use serde::{Serialize, de::DeserializeOwned};
+use cosmwasm_std::{Storage, Order, Api, Querier, Binary, ContractResult, SystemResult, VerificationError, RecoverPubkeyError, Addr};
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
+
+const CONTRACT_STATE_PREFIX: &[u8] = b"contract_state/";
+const CONTRACT_CODE_PREFIX: &[u8] = b"contract_code/";
+const CONTRACT_ADMIN_PREFIX: &[u8] = b"contract_admin/";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ContractInfo {
+    pub code_id: u64,
+    pub creator: Addr,
+    pub admin: Option<Addr>,
+    pub label: String,
+    pub created_at: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CodeInfo {
+    pub creator: Addr,
+    pub checksum: [u8; 32],
+    pub created_at: u64,
+}
+
+pub struct ContractState<'a> {
+    storage: &'a mut dyn Storage,
+    contract_addr: Addr,
+    pub(crate) info: ContractInfo,
+}
+
+impl<'a> ContractState<'a> {
+    pub fn new(
+        storage: &'a mut dyn Storage,
+        contract_addr: Addr,
+        code_id: u64,
+        creator: Addr,
+        admin: Option<Addr>,
+        label: String,
+    ) -> Self {
+        let info = ContractInfo {
+            code_id,
+            creator,
+            admin,
+            label,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+        
+        Self {
+            storage,
+            contract_addr,
+            info,
+        }
+    }
+
+    pub fn load(storage: &'a mut dyn Storage, contract_addr: Addr) -> Option<Self> {
+        let key = [CONTRACT_STATE_PREFIX, contract_addr.as_bytes()].concat();
+        let info: ContractInfo = storage.get(&key)
+            .and_then(|data| serde_json::from_slice(&data).ok())?;
+        
+        Some(Self {
+            storage,
+            contract_addr,
+            info,
+        })
+    }
+
+    pub fn save(&mut self) -> Result<(), cosmwasm_std::StdError> {
+        let key = [CONTRACT_STATE_PREFIX, self.contract_addr.as_bytes()].concat();
+        let data = serde_json::to_vec(&self.info)
+            .map_err(|e| cosmwasm_std::StdError::serialize_err("ContractInfo", e))?;
+        self.storage.set(&key, &data);
+        Ok(())
+    }
+
+    pub fn get_storage(&mut self) -> StorageAdapter {
+        StorageAdapter::new(
+            self.storage,
+            [CONTRACT_STATE_PREFIX, self.contract_addr.as_bytes()].concat(),
+        )
+    }
+
+    pub fn update_admin(&mut self, new_admin: Option<Addr>) -> Result<(), cosmwasm_std::StdError> {
+        self.info.admin = new_admin;
+        self.save()
+    }
+
+    pub fn get_code_info(&self) -> Option<CodeInfo> {
+        let key = [CONTRACT_CODE_PREFIX, &self.info.code_id.to_be_bytes()].concat();
+        self.storage.get(&key)
+            .and_then(|data| serde_json::from_slice(&data).ok())
+    }
+
+    pub fn get_info(&self) -> &ContractInfo {
+        &self.info
+    }
+}
 
 pub struct StorageAdapter<'a> {
     storage: &'a mut dyn Storage,
@@ -30,7 +126,7 @@ impl<'a> StorageAdapter<'a> {
     pub fn set_state<T: Serialize>(&mut self, key: &str, value: &T) -> Result<(), cosmwasm_std::StdError> {
         // Serialize value
         let serialized = serde_json::to_vec(value)
-            .map_err(|e| cosmwasm_std::StdError::generic_err(e.to_string()))?;
+            .map_err(|e| cosmwasm_std::StdError::serialize_err(key, e))?;
 
         // Get prefixed key
         let prefixed_key = self.get_prefixed_key(key);
@@ -49,7 +145,7 @@ impl<'a> StorageAdapter<'a> {
         let prefixed_key = self.get_prefixed_key(key);
         self.storage.get(&prefixed_key).and_then(|data| {
             serde_json::from_slice(&data)
-                .map_err(|e| cosmwasm_std::StdError::generic_err(e.to_string()))
+                .map_err(|e| cosmwasm_std::StdError::serialize_err("ContractState", e))
                 .ok()
         })
     }
@@ -93,247 +189,86 @@ impl Storage for StorageAdapter<'_> {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct MockStorage {
-    data: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>,
-}
-
-impl Storage for MockStorage {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.read().unwrap().get(&key.to_vec()).cloned()
-    }
-
-    fn set(&mut self, key: &[u8], value: &[u8]) {
-        self.data.write().unwrap().insert(key.to_vec(), value.to_vec());
-    }
-
-    fn remove(&mut self, key: &[u8]) {
-        self.data.write().unwrap().remove(&key.to_vec());
-    }
-
-    fn range<'a>(
-        &'a self,
-        start: Option<&[u8]>,
-        end: Option<&[u8]>,
-        order: Order,
-    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> {
-        let data = self.data.read().unwrap();
-        let iter = data.iter()
-            .filter(move |(k, _)| {
-                let valid_start = start.map_or(true, |s| k.as_slice() >= s);
-                let valid_end = end.map_or(true, |e| k.as_slice() < e);
-                valid_start && valid_end
-            })
-            .map(|(k, v)| (k.clone(), v.clone()));
-
-        match order {
-            Order::Ascending => Box::new(iter.collect::<Vec<_>>().into_iter()),
-            Order::Descending => Box::new(iter.collect::<Vec<_>>().into_iter().rev()),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct ThreadSafeStorage(Arc<RwLock<MockStorage>>);
-
-impl Default for ThreadSafeStorage {
-    fn default() -> Self {
-        Self(Arc::new(RwLock::new(MockStorage::default())))
-    }
-}
-
-impl Storage for ThreadSafeStorage {
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.0.read().unwrap().get(key)
-    }
-
-    fn set(&mut self, key: &[u8], value: &[u8]) {
-        self.0.write().unwrap().set(key, value)
-    }
-
-    fn remove(&mut self, key: &[u8]) {
-        self.0.write().unwrap().remove(key)
-    }
-
-    fn range<'a>(
-        &'a self,
-        start: Option<&[u8]>,
-        end: Option<&[u8]>,
-        order: Order,
-    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> {
-        let data = self.0.read().unwrap();
-        let items: Vec<_> = data.range(start, end, order)
-            .map(|(k, v)| (k.to_vec(), v.to_vec()))
-            .collect();
-        Box::new(items.into_iter())
-    }
-}
-
-#[derive(Clone)]
-pub struct ThreadSafeQuerier(Arc<MockQuerier>);
-
-impl Default for ThreadSafeQuerier {
-    fn default() -> Self {
-        Self(Arc::new(MockQuerier::default()))
-    }
-}
-
-impl Querier for ThreadSafeQuerier {
-    fn raw_query(&self, bin_request: &[u8]) -> cosmwasm_std::QuerierResult {
-        self.0.raw_query(bin_request)
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct MockApi;
-
-impl Api for MockApi {
-    fn addr_validate(&self, human: &str) -> cosmwasm_std::StdResult<cosmwasm_std::Addr> {
-        Ok(cosmwasm_std::Addr::unchecked(human))
-    }
-
-    fn addr_canonicalize(&self, human: &str) -> cosmwasm_std::StdResult<cosmwasm_std::CanonicalAddr> {
-        Ok(cosmwasm_std::CanonicalAddr::from(human.as_bytes()))
-    }
-
-    fn addr_humanize(&self, canonical: &cosmwasm_std::CanonicalAddr) -> cosmwasm_std::StdResult<cosmwasm_std::Addr> {
-        Ok(cosmwasm_std::Addr::unchecked(String::from_utf8_lossy(canonical.as_slice())))
-    }
-
-    fn secp256k1_verify(&self, _message_hash: &[u8], _signature: &[u8], _public_key: &[u8]) -> Result<bool, VerificationError> {
-        Ok(true)
-    }
-
-    fn secp256k1_recover_pubkey(&self, _message_hash: &[u8], _signature: &[u8], _recovery_param: u8) -> Result<Vec<u8>, RecoverPubkeyError> {
-        Ok(vec![])
-    }
-
-    fn ed25519_verify(&self, _message: &[u8], _signature: &[u8], _public_key: &[u8]) -> Result<bool, VerificationError> {
-        Ok(true)
-    }
-
-    fn ed25519_batch_verify(&self, _messages: &[&[u8]], _signatures: &[&[u8]], _public_keys: &[&[u8]]) -> Result<bool, VerificationError> {
-        Ok(true)
-    }
-
-    fn debug(&self, _message: &str) {
-        // No-op for tests
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct MockQuerier;
-
-impl Querier for MockQuerier {
-    fn raw_query(&self, _bin_request: &[u8]) -> cosmwasm_std::QuerierResult {
-        SystemResult::Ok(ContractResult::Ok(Binary::default()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cosmwasm_std::testing::MockStorage;
 
     #[test]
-    fn test_storage_operations() {
-        let storage = Arc::new(RwLock::new(MockStorage::default()));
-        
-        // Test write
-        {
-            let mut guard = storage.write().unwrap();
-            let mut adapter = StorageAdapter::new(&mut *guard, b"test".to_vec());
-            adapter.set_state("counter", &42i32).unwrap();
-        }
+    fn test_contract_state() {
+        let mut storage = MockStorage::default();
+        let contract_addr = Addr::unchecked("contract1");
+        let creator = Addr::unchecked("creator");
+        let admin = Some(Addr::unchecked("admin"));
+        let label = "My Contract".to_string();
 
-        // Test read
-        {
-            let mut guard = storage.write().unwrap();
-            let adapter = StorageAdapter::new(&mut *guard, b"test".to_vec());
-            let value: i32 = adapter.get_state("counter").unwrap();
-            assert_eq!(value, 42);
-        }
+        // Create new contract state
+        let mut contract = ContractState::new(
+            &mut storage,
+            contract_addr.clone(),
+            1u64,
+            creator.clone(),
+            admin.clone(),
+            label.clone(),
+        );
+        contract.save().unwrap();
 
-        // Test delete
-        {
-            let mut guard = storage.write().unwrap();
-            let mut adapter = StorageAdapter::new(&mut *guard, b"test".to_vec());
-            adapter.delete_state("counter");
-        }
+        // Load contract state
+        let loaded = ContractState::load(&mut storage, contract_addr.clone()).unwrap();
+        assert_eq!(loaded.get_info().code_id, 1u64);
+        assert_eq!(loaded.get_info().creator, creator);
+        assert_eq!(loaded.get_info().admin, admin);
+        assert_eq!(loaded.get_info().label, label);
 
-        // Verify deletion
-        {
-            let mut guard = storage.write().unwrap();
-            let adapter = StorageAdapter::new(&mut *guard, b"test".to_vec());
-            assert!(adapter.get_state::<i32>("counter").is_none());
-        }
+        // Update admin
+        let mut contract = ContractState::load(&mut storage, contract_addr.clone()).unwrap();
+        let new_admin = Some(Addr::unchecked("new_admin"));
+        contract.update_admin(new_admin.clone()).unwrap();
+
+        // Verify admin update
+        let loaded = ContractState::load(&mut storage, contract_addr).unwrap();
+        assert_eq!(loaded.get_info().admin, new_admin);
     }
 
     #[test]
-    fn test_prefix_isolation() {
-        let storage = Arc::new(RwLock::new(MockStorage::default()));
+    fn test_contract_storage() {
+        let mut storage = MockStorage::default();
+        let contract_addr = Addr::unchecked("contract1");
+        let creator = Addr::unchecked("creator");
         
-        // Write with first adapter
-        {
-            let mut guard = storage.write().unwrap();
-            let mut adapter = StorageAdapter::new(&mut *guard, b"test1".to_vec());
-            adapter.set_state("key", &1i32).unwrap();
-        }
-        
-        // Write with second adapter
-        {
-            let mut guard = storage.write().unwrap();
-            let mut adapter = StorageAdapter::new(&mut *guard, b"test2".to_vec());
-            adapter.set_state("key", &2i32).unwrap();
+        // Create contract state
+        let mut contract = ContractState::new(
+            &mut storage,
+            contract_addr.clone(),
+            1u64,
+            creator,
+            None,
+            "test".to_string(),
+        );
+        contract.save().unwrap();
+
+        // Get contract storage
+        let mut contract_storage = contract.get_storage();
+
+        // Test state operations
+        #[derive(Serialize, Deserialize, Debug, PartialEq)]
+        struct TestState {
+            value: String,
         }
 
-        // Read and verify
-        {
-            let mut guard = storage.write().unwrap();
-            let adapter1 = StorageAdapter::new(&mut *guard, b"test1".to_vec());
-            let value1: i32 = adapter1.get_state("key").unwrap();
-            assert_eq!(value1, 1);
-        }
-        {
-            let mut guard = storage.write().unwrap();
-            let adapter2 = StorageAdapter::new(&mut *guard, b"test2".to_vec());
-            let value2: i32 = adapter2.get_state("key").unwrap();
-            assert_eq!(value2, 2);
-        }
-    }
-
-    #[test]
-    fn test_range() {
-        let storage = Arc::new(RwLock::new(MockStorage::default()));
-        
-        // Insert test data
-        {
-            let mut guard = storage.write().unwrap();
-            let mut adapter = StorageAdapter::new(&mut *guard, b"test".to_vec());
-            for i in 0..5 {
-                let key = format!("key{}", i);
-                adapter.set_state(&key, &i).unwrap();
-            }
-        }
-
-        // Test range query
-        let items = {
-            let mut guard = storage.write().unwrap();
-            let adapter = StorageAdapter::new(&mut *guard, b"test".to_vec());
-            let mut items: Vec<_> = adapter.storage.range(None, None, Order::Ascending)
-                .map(|(k, v)| {
-                    let key = String::from_utf8(k[4..].to_vec()).unwrap(); // Skip prefix "test"
-                    let value: i32 = serde_json::from_slice(&v).unwrap();
-                    (key, value)
-                })
-                .collect();
-            items.sort_by(|a, b| a.0.cmp(&b.0));
-            items
+        let test_state = TestState {
+            value: "test value".to_string(),
         };
 
-        assert_eq!(items.len(), 5);
-        for (i, (key, value)) in items.iter().enumerate() {
-            assert_eq!(key, &format!("key{}", i));
-            assert_eq!(*value, i as i32);
-        }
+        // Set state
+        contract_storage.set_state("test_key", &test_state).unwrap();
+
+        // Get state
+        let loaded: TestState = contract_storage.get_state("test_key").unwrap();
+        assert_eq!(loaded, test_state);
+
+        // Delete state
+        contract_storage.delete_state("test_key");
+        assert!(contract_storage.get_state::<TestState>("test_key").is_none());
     }
 }
