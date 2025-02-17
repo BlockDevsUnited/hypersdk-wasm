@@ -240,6 +240,19 @@ where
         }
     )?;
 
+    // Memory allocation functions
+    linker.func_wrap("env", "allocate",
+        |mut caller: Caller<'_, HostEnv<S, A, Q>>, size: u32| -> Result<u32> {
+            caller.data_mut().allocate(size)
+        }
+    )?;
+
+    linker.func_wrap("env", "deallocate",
+        |mut caller: Caller<'_, HostEnv<S, A, Q>>, ptr: u32| -> Result<()> {
+            caller.data_mut().deallocate(ptr)
+        }
+    )?;
+
     // Query function
     linker.func_wrap("env", "query_chain",
         |mut _caller: Caller<'_, HostEnv<S, A, Q>>, query_ptr: u32| -> Result<u32> {
@@ -264,47 +277,6 @@ where
                 },
                 SystemResult::Err(_) => Ok(0),
             }
-        }
-    )?;
-
-    // Memory functions
-    linker.func_wrap("env", "allocate",
-        |mut caller: Caller<'_, HostEnv<S, A, Q>>, size: u32| -> Result<u32> {
-            let memory = caller.get_export("memory")
-                .ok_or_else(|| anyhow::anyhow!("no memory export"))?.into_memory()
-                .ok_or_else(|| anyhow::anyhow!("export is not memory"))?;
-    
-            // Allocate memory starting from 64KB to avoid conflicts with other regions
-            let mut next_ptr = caller.data().next_ptr.borrow_mut();
-            let ptr = *next_ptr;
-            
-            // Calculate total size needed
-            let total_size = size;
-            
-            *next_ptr = next_ptr.checked_add(total_size)
-                .ok_or_else(|| anyhow::anyhow!("Memory size overflow"))?;
-
-            // Ensure we have enough memory
-            let required_pages = (u64::from(*next_ptr) + 65535) / 65536;
-            let current_pages = memory.size(&caller);
-            drop(next_ptr); // Release the borrow
-            
-            if required_pages > current_pages {
-                memory.grow(&mut caller, required_pages - current_pages)?;
-            }
-
-            // Initialize memory region with zeros
-            let data = vec![0u8; total_size as usize];
-            memory.write(&mut caller, ptr as usize, &data)?;
-
-            Ok(ptr)
-        }
-    )?;
-
-    linker.func_wrap("env", "deallocate",
-        |mut _caller: Caller<'_, HostEnv<S, A, Q>>, ptr: u32| -> Result<()> {
-            // For now, we don't actually deallocate memory since we're using a simple bump allocator
-            Ok(())
         }
     )?;
 

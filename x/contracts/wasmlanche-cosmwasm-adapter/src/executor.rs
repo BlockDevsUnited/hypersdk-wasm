@@ -1,13 +1,14 @@
-use cosmwasm_std::{Storage, Api, Querier, MessageInfo, QueryRequest, ContractResult, Empty, Binary, to_json_binary, from_json};
-use wasmtime::{Store, Module, Engine, Linker, Instance, Val};
+use cosmwasm_std::{Storage, Api, Querier, MessageInfo, QueryRequest, ContractResult, Binary, to_json_binary, from_json, Addr};
+use wasmtime::{Store, Module, Engine, Linker, Instance};
 use anyhow::Result;
 use serde::Serialize;
 
 use crate::error::ExecutorError;
 use crate::host::{self, HostEnv};
-use crate::imports::define_imports;
+use crate::imports;
+use crate::testing::{ThreadSafeStorage, ThreadSafeQuerier};
 
-pub struct Executor<S, A, Q>
+pub struct WasmExecutor<S, A, Q>
 where
     S: Storage + Clone + 'static,
     A: Api + Clone + 'static,
@@ -20,7 +21,7 @@ where
     linker: Linker<HostEnv<S, A, Q>>,
 }
 
-impl<S, A, Q> Executor<S, A, Q>
+impl<S, A, Q> WasmExecutor<S, A, Q>
 where
     S: Storage + Clone + 'static,
     A: Api + Clone + 'static,
@@ -33,28 +34,34 @@ where
         gas_limit: u64,
         engine: Engine,
         module: Module,
-    ) -> Self {
+    ) -> Result<Self, ExecutorError> {
         let mut store = Store::new(
             &engine,
             HostEnv::new(storage, api, querier, gas_limit),
         );
 
         let mut linker = Linker::new(&engine);
-        define_imports(&mut linker, &mut store, module.clone()).unwrap();
-        let instance = linker.instantiate(&mut store, &module).unwrap();
+        imports::define_imports(&mut linker, &mut store, module.clone())?;
+        let instance = linker.instantiate(&mut store, &module)
+            .map_err(|e| ExecutorError::InstantiationError(e.to_string()))?;
 
         // Get memory from instance and set it in the host environment
         if let Some(memory) = instance.get_export(&mut store, "memory").and_then(|e| e.into_memory()) {
             store.data_mut().set_memory(memory);
         }
 
-        Self {
+        Ok(Self {
             store,
             instance,
             gas_limit,
             module,
             linker,
-        }
+        })
+    }
+
+    pub fn set_gas_limit(&mut self, gas_limit: u64) {
+        self.gas_limit = gas_limit;
+        self.store.data_mut().set_gas_limit(gas_limit);
     }
 
     pub fn instantiate(
@@ -64,7 +71,7 @@ where
         gas_limit: Option<u64>,
     ) -> Result<Vec<u8>, ExecutorError> {
         if let Some(gas) = gas_limit {
-            self.store.data_mut().set_gas_limit(gas);
+            self.set_gas_limit(gas);
         }
 
         let instantiate = self.instance
@@ -89,7 +96,7 @@ where
         gas_limit: Option<u64>,
     ) -> Result<Vec<u8>, ExecutorError> {
         if let Some(gas) = gas_limit {
-            self.store.data_mut().set_gas_limit(gas);
+            self.set_gas_limit(gas);
         }
 
         let execute = self.instance
@@ -196,43 +203,60 @@ mod tests {
         let engine = Engine::default();
         let wasm = wat::parse_str(r#"
             (module
-                (type $t0 (func (param i32 i32 i32) (result i32)))
-                (type $t1 (func (param i32)))
-                (type $t2 (func (param i32) (result i32)))
+                (type $t0 (func (param i32) (result i32)))
+                (type $t1 (func (param i32 i32)))
+                (type $t2 (func (param i32)))
+                (type $t3 (func (param i32 i32) (result i32)))
+                (type $t4 (func (param i32 i32 i32) (result i32)))
+                (type $t5 (func (param i32 i32 i32) (result i64)))
                 
-                (import "env" "db_read" (func $db_read (param i32) (result i32)))
-                (import "env" "db_write" (func $db_write (param i32 i32)))
-                (import "env" "db_remove" (func $db_remove (param i32)))
-                (import "env" "debug" (func $debug (param i32)))
-                (import "env" "abort" (func $abort (param i32)))
+                ;; Memory management imports
+                (import "env" "allocate" (func $allocate (type $t0)))
+                (import "env" "deallocate" (func $deallocate (type $t2)))
                 
-                (memory $memory (export "memory") 1)
-                (func $allocate (export "allocate") (param i32) (result i32) (local.get 0))
-                (func $deallocate (export "deallocate") (param i32))
-                (func $instantiate (export "instantiate") (param i32 i32 i32) (result i32) (i32.const 0))
-                (func $execute (export "execute") (param i32 i32 i32) (result i32) (i32.const 0))
-                (func $query (export "query") (param i32 i32 i64) (result i32) (i32.const 0))
+                ;; Required contract functions
+                (func $instantiate (param $p0 i32) (param $p1 i32) (param $p2 i32) (result i32)
+                    (local $result i32)
+                    (local.set $result (call $allocate (i32.const 4)))
+                    (i32.store (local.get $result) (i32.const 0))
+                    (local.get $result))
+                
+                (func $execute (param $p0 i32) (param $p1 i32) (param $p2 i32) (result i32)
+                    (local $result i32)
+                    (local.set $result (call $allocate (i32.const 4)))
+                    (i32.store (local.get $result) (i32.const 0))
+                    (local.get $result))
+                
+                (func $query (param $p0 i32) (param $p1 i32) (param $p2 i32) (result i32)
+                    (local $result i32)
+                    (local.set $result (call $allocate (i32.const 4)))
+                    (i32.store (local.get $result) (i32.const 0))
+                    (local.get $result))
+                
+                (memory $memory 2 10)
+                (export "memory" (memory $memory))
+                (export "instantiate" (func $instantiate))
+                (export "execute" (func $execute))
+                (export "query" (func $query))
             )
         "#).unwrap();
 
-        let module = Module::new(&engine, &wasm).unwrap();
-        
-        let mut executor = Executor::new(
-            ClonableStorage::new(),
+        let module = Module::new(&engine, wasm).unwrap();
+        let mut executor = WasmExecutor::new(
+            ThreadSafeStorage::new(),
             MockApi::default(),
-            ClonableQuerier::new(),
+            ThreadSafeQuerier::new(),
             1_000_000,
             engine,
             module,
-        );
+        ).unwrap();
 
-        let msg = b"{}";
         let info = MessageInfo {
             sender: Addr::unchecked("sender"),
             funds: vec![],
         };
 
-        let result = executor.instantiate(msg, &info, None);
+        let result = executor.instantiate(b"hello", &info, None);
         assert!(result.is_ok());
     }
 }

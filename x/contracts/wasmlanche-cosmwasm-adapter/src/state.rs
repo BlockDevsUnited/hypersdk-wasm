@@ -60,7 +60,7 @@ impl<'a> ContractState<'a> {
     pub fn load(storage: &'a mut dyn Storage, contract_addr: Addr) -> Option<Self> {
         let key = [CONTRACT_STATE_PREFIX, contract_addr.as_bytes()].concat();
         let info: ContractInfo = storage.get(&key)
-            .and_then(|data| serde_json::from_slice(&data).ok())?;
+            .and_then(|data| cosmwasm_std::from_json(&data).ok())?;
         
         Some(Self {
             storage,
@@ -71,9 +71,9 @@ impl<'a> ContractState<'a> {
 
     pub fn save(&mut self) -> Result<(), cosmwasm_std::StdError> {
         let key = [CONTRACT_STATE_PREFIX, self.contract_addr.as_bytes()].concat();
-        let data = serde_json::to_vec(&self.info)
+        let data = cosmwasm_std::to_json_binary(&self.info)
             .map_err(|e| cosmwasm_std::StdError::serialize_err("ContractInfo", e))?;
-        self.storage.set(&key, &data);
+        self.storage.set(&key, data.as_slice());
         Ok(())
     }
 
@@ -92,7 +92,7 @@ impl<'a> ContractState<'a> {
     pub fn get_code_info(&self) -> Option<CodeInfo> {
         let key = [CONTRACT_CODE_PREFIX, &self.info.code_id.to_be_bytes()].concat();
         self.storage.get(&key)
-            .and_then(|data| serde_json::from_slice(&data).ok())
+            .and_then(|data| cosmwasm_std::from_json(&data).ok())
     }
 
     pub fn get_info(&self) -> &ContractInfo {
@@ -124,8 +124,8 @@ impl<'a> StorageAdapter<'a> {
     }
 
     pub fn set_state<T: Serialize>(&mut self, key: &str, value: &T) -> Result<(), cosmwasm_std::StdError> {
-        // Serialize value
-        let serialized = serde_json::to_vec(value)
+        // Serialize value using to_json_binary
+        let serialized = cosmwasm_std::to_json_binary(value)
             .map_err(|e| cosmwasm_std::StdError::serialize_err(key, e))?;
 
         // Get prefixed key
@@ -134,20 +134,17 @@ impl<'a> StorageAdapter<'a> {
         // Update state hash
         let mut hasher = self.state_hasher.write().unwrap();
         hasher.update(&prefixed_key);
-        hasher.update(&serialized);
+        hasher.update(serialized.as_slice());
 
         // Store value
-        self.storage.set(&prefixed_key, &serialized);
+        self.storage.set(&prefixed_key, serialized.as_slice());
         Ok(())
     }
 
     pub fn get_state<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
         let prefixed_key = self.get_prefixed_key(key);
-        self.storage.get(&prefixed_key).and_then(|data| {
-            serde_json::from_slice(&data)
-                .map_err(|e| cosmwasm_std::StdError::serialize_err("ContractState", e))
-                .ok()
-        })
+        self.storage.get(&prefixed_key)
+            .and_then(|data| cosmwasm_std::from_json(&data).ok())
     }
 
     pub fn delete_state(&mut self, key: &str) {

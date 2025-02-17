@@ -1,145 +1,188 @@
 use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::ops::Bound;
 use cosmwasm_std::{
-    Binary, Storage, Order, Api, Querier, ContractResult, SystemResult, Empty, WasmQuery,
-    testing::{MockStorage, MockQuerier},
+    Binary, Storage, Api, Querier, QuerierResult, Order,
+    Addr, CanonicalAddr, StdError, SystemResult, ContractResult,
+    VerificationError, RecoverPubkeyError,
 };
 
-// Thread-safe function type aliases
-type ThreadSafeEmptyQueryFn = Arc<dyn Fn(&Empty) -> SystemResult<ContractResult<Binary>> + Send + Sync>;
-type ThreadSafeWasmQueryFn = Arc<dyn Fn(&WasmQuery) -> SystemResult<ContractResult<Binary>> + Send + Sync>;
-
 #[derive(Clone)]
-pub struct ThreadSafeStorage(Arc<RwLock<MockStorage>>);
+pub struct ThreadSafeStorage {
+    data: Arc<RwLock<BTreeMap<Vec<u8>, Vec<u8>>>>
+}
+
+impl ThreadSafeStorage {
+    pub fn new() -> Self {
+        Self {
+            data: Arc::new(RwLock::new(BTreeMap::new()))
+        }
+    }
+}
 
 impl Default for ThreadSafeStorage {
     fn default() -> Self {
-        Self(Arc::new(RwLock::new(MockStorage::default())))
+        Self::new()
     }
 }
 
 impl Storage for ThreadSafeStorage {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.0.read().unwrap().get(key)
+        self.data.read()
+            .unwrap()
+            .get(key)
+            .cloned()
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) {
-        self.0.write().unwrap().set(key, value)
+        self.data.write()
+            .unwrap()
+            .insert(key.to_vec(), value.to_vec());
     }
 
     fn remove(&mut self, key: &[u8]) {
-        self.0.write().unwrap().remove(key)
+        self.data.write()
+            .unwrap()
+            .remove(key);
     }
 
-    fn range<'a>(
-        &'a self,
-        start: Option<&[u8]>,
-        end: Option<&[u8]>,
-        order: Order,
-    ) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> {
-        let data = self.0.read().unwrap();
-        let items: Vec<_> = data.range(start, end, order).collect();
-        Box::new(items.into_iter())
+    fn range<'a>(&'a self, start: Option<&[u8]>, end: Option<&[u8]>, order: Order) -> Box<dyn Iterator<Item = (Vec<u8>, Vec<u8>)> + 'a> {
+        let data = self.data.read().unwrap();
+        let start_bound = start.map_or(Bound::Unbounded, |s| Bound::Included(s.to_vec()));
+        let end_bound = end.map_or(Bound::Unbounded, |e| Bound::Excluded(e.to_vec()));
+        
+        // Collect into a Vec to avoid lifetime issues with the RwLockReadGuard
+        let items: Vec<_> = data.range((start_bound, end_bound))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let iter = items.into_iter();
+        match order {
+            Order::Ascending => Box::new(iter),
+            Order::Descending => Box::new(iter.rev()),
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct ThreadSafeApi;
 
-impl Default for ThreadSafeApi {
-    fn default() -> Self {
+impl ThreadSafeApi {
+    pub fn new() -> Self {
         Self
     }
 }
 
 impl Api for ThreadSafeApi {
-    fn addr_validate(&self, human: &str) -> cosmwasm_std::StdResult<cosmwasm_std::Addr> {
-        // Basic validation: must start with "cosmos" and be at least 10 chars
-        if !human.starts_with("cosmos") || human.len() < 10 {
-            return Err(cosmwasm_std::StdError::generic_err("Invalid address"));
-        }
-        Ok(cosmwasm_std::Addr::unchecked(human))
-    }
-
-    fn addr_canonicalize(&self, human: &str) -> cosmwasm_std::StdResult<cosmwasm_std::CanonicalAddr> {
-        // Validate the address first
-        self.addr_validate(human)?;
-        Ok(cosmwasm_std::CanonicalAddr::from(human.as_bytes().to_vec()))
-    }
-
-    fn addr_humanize(&self, canonical: &cosmwasm_std::CanonicalAddr) -> cosmwasm_std::StdResult<cosmwasm_std::Addr> {
-        // Convert the canonical address back to a string
-        let human = String::from_utf8(canonical.as_slice().to_vec())
-            .map_err(|_| cosmwasm_std::StdError::generic_err("Invalid canonical address"))?;
-        self.addr_validate(&human)
-    }
-
-    fn secp256k1_verify(&self, message_hash: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool, cosmwasm_std::VerificationError> {
-        // Removed implementation
-        unimplemented!()
-    }
-
-    fn secp256k1_recover_pubkey(&self, message_hash: &[u8], signature: &[u8], recovery_param: u8) -> Result<Vec<u8>, cosmwasm_std::RecoverPubkeyError> {
-        // Removed implementation
-        unimplemented!()
-    }
-
-    fn ed25519_verify(&self, message: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool, cosmwasm_std::VerificationError> {
-        // Removed implementation
-        unimplemented!()
-    }
-
-    fn ed25519_batch_verify(&self, messages: &[&[u8]], signatures: &[&[u8]], public_keys: &[&[u8]]) -> Result<bool, cosmwasm_std::VerificationError> {
-        // Removed implementation
-        unimplemented!()
-    }
-
     fn debug(&self, message: &str) {
-        // Removed implementation
-        unimplemented!()
+        println!("Debug: {}", message);
+    }
+
+    fn addr_validate(&self, human: &str) -> Result<Addr, StdError> {
+        Ok(Addr::unchecked(human))
+    }
+
+    fn addr_canonicalize(&self, human: &str) -> Result<CanonicalAddr, StdError> {
+        Ok(CanonicalAddr::from(Binary::from(human.as_bytes())))
+    }
+
+    fn addr_humanize(&self, canonical: &CanonicalAddr) -> Result<Addr, StdError> {
+        String::from_utf8(canonical.as_slice().to_vec())
+            .map(|s| Addr::unchecked(s))
+            .map_err(|_| StdError::generic_err("Invalid canonical address"))
+    }
+
+    fn secp256k1_verify(
+        &self,
+        _message_hash: &[u8],
+        _signature: &[u8],
+        _public_key: &[u8],
+    ) -> Result<bool, VerificationError> {
+        Ok(true)
+    }
+
+    fn secp256k1_recover_pubkey(
+        &self,
+        _message_hash: &[u8],
+        _signature: &[u8],
+        _recovery_param: u8,
+    ) -> Result<Vec<u8>, RecoverPubkeyError> {
+        Ok(vec![])
+    }
+
+    fn ed25519_verify(
+        &self,
+        _message: &[u8],
+        _signature: &[u8],
+        _public_key: &[u8],
+    ) -> Result<bool, VerificationError> {
+        Ok(true)
+    }
+
+    fn ed25519_batch_verify(
+        &self,
+        _messages: &[&[u8]],
+        _signatures: &[&[u8]],
+        _public_keys: &[&[u8]],
+    ) -> Result<bool, VerificationError> {
+        Ok(true)
     }
 }
 
 #[derive(Clone)]
-pub struct ThreadSafeQuerier {
-    empty_handler: ThreadSafeEmptyQueryFn,
-    wasm_handler: ThreadSafeWasmQueryFn,
-}
-
-impl Default for ThreadSafeQuerier {
-    fn default() -> Self {
-        Self {
-            empty_handler: Arc::new(|_| SystemResult::Ok(ContractResult::Ok(Binary::default()))),
-            wasm_handler: Arc::new(|_| SystemResult::Ok(ContractResult::Ok(Binary::default()))),
-        }
-    }
-}
+pub struct ThreadSafeQuerier;
 
 impl ThreadSafeQuerier {
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_empty<F>(mut self, handler: F) -> Self 
-    where
-        F: Fn(&Empty) -> SystemResult<ContractResult<Binary>> + Send + Sync + 'static,
-    {
-        self.empty_handler = Arc::new(handler);
-        self
-    }
-
-    pub fn with_wasm<F>(mut self, handler: F) -> Self 
-    where
-        F: Fn(&WasmQuery) -> SystemResult<ContractResult<Binary>> + Send + Sync + 'static,
-    {
-        self.wasm_handler = Arc::new(handler);
-        self
+        Self
     }
 }
 
 impl Querier for ThreadSafeQuerier {
-    fn raw_query(&self, bin_request: &[u8]) -> cosmwasm_std::QuerierResult {
-        // Default implementation - you may want to customize this based on your needs
-        SystemResult::Ok(ContractResult::Ok(Binary::default()))
+    fn raw_query(&self, _bin_request: &[u8]) -> QuerierResult {
+        SystemResult::Ok(ContractResult::Ok(Binary::from(vec![])))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_storage() {
+        let mut storage = ThreadSafeStorage::new();
+        
+        // Test set and get
+        let key = b"test_key".to_vec();
+        let value = b"test_value".to_vec();
+        storage.set(&key, &value);
+        
+        assert_eq!(storage.get(&key), Some(value.clone()));
+        
+        // Test remove
+        storage.remove(&key);
+        assert_eq!(storage.get(&key), None);
+        
+        // Test range
+        let test_data = vec![
+            (b"a".to_vec(), b"1".to_vec()),
+            (b"b".to_vec(), b"2".to_vec()),
+            (b"c".to_vec(), b"3".to_vec()),
+        ];
+        
+        for (k, v) in &test_data {
+            storage.set(k, v);
+        }
+        
+        let range_result: Vec<(Vec<u8>, Vec<u8>)> = storage
+            .range(Some(b"a"), Some(b"c"), Order::Ascending)
+            .collect();
+            
+        assert_eq!(range_result.len(), 2);
+        
+        assert_eq!(&range_result[0].0, b"a");
+        assert_eq!(&range_result[0].1, b"1");
+        assert_eq!(&range_result[1].0, b"b"); 
+        assert_eq!(&range_result[1].1, b"2");
     }
 }
