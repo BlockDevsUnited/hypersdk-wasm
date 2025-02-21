@@ -1,18 +1,20 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::env;
-use std::path::Path;
-use std::process::Command;
+use std::{
+    env,
+    fs::{self, File},
+    io::Write,
+    path::Path,
+    process::Command,
+};
 
 pub const BUILD_DIR_NAME: &str = "target";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RELEASE_PROFILE: &str = "release";
 
-#[allow(clippy::module_name_repetitions)]
-/// Put this in your build.rs file. It currently relies on `/build` directory to be in your crate root.
-/// # Panics
-/// Will panic when attempting to build the wasm file fails.
+/// Build the WASM contract.
+/// This function is used in build.rs scripts to build WASM contracts.
 pub fn build_wasm() {
     let target = env::var("TARGET").unwrap();
     let profile = env::var("PROFILE").unwrap();

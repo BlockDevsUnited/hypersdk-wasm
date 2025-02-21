@@ -6,7 +6,14 @@ use std::{
     cell::UnsafeCell,
 };
 use sdk_macros::public;
-use wasmlanche::Context;
+use wasmlanche::{
+    Context,
+    host::{Host, HostState},
+    types::WasmlAddress,
+};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tokio::runtime::Runtime;
 
 struct HighestAllocatedAddress {
     value: UnsafeCell<usize>,
@@ -87,20 +94,31 @@ pub fn allocate(_context: &mut Context, data: &[u8]) -> u32 {
     ptr as u32
 }
 
+pub fn create_test_context() -> Context {
+    let state = Arc::new(RwLock::new(HostState::default()));
+    let host = Host::new(state);
+    let actor = WasmlAddress::try_from(&[0u8; 33][..]).unwrap();
+    Context::new(actor, 0, 0, Arc::new(RwLock::new(host)), None)
+}
+
 #[cfg(test)]
 mod tests {
-    use wasmlanche::{Address, Context};
+    use super::*;
+    use tokio::runtime::Runtime;
 
     #[test]
     fn test_balance() {
-        let address = Address::default();
-        let mut context = Context::with_actor(address);
-        let amount: u64 = 100;
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut context = create_test_context();
+            let addr = context.actor().clone();
+            let amount = 100;
 
-        // set the balance
-        context.mock_set_balance(address, amount);
+            let to = addr.clone();
+            context.transfer(&addr, &to, amount).await.unwrap();
 
-        let balance = context.get_balance(address);
-        assert_eq!(balance, amount);
+            let balance = context.get_balance(&addr).await.unwrap();
+            assert_eq!(balance, amount);
+        });
     }
 }

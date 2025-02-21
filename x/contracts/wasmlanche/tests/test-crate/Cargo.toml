@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tokio = { version = "1.0", features = ["full"] }
 wasmlanche = { workspace = true }
 sdk-macros = { path = "../../../sdk-macros" }
+futures = "0.3"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

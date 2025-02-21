@@ -1,71 +1,62 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use wasmlanche::Address;
-use wasmlanche_test::{Builder, TestCrate, UserDefinedFn};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use borsh::{BorshSerialize, BorshDeserialize};
+use wasmlanche_test::create_test_context;
 
-pub struct Contract {
-    inner: TestCrate,
-    always_true: UserDefinedFn,
+#[derive(BorshSerialize, BorshDeserialize)]
+struct State {
+    value: u64,
 }
 
-impl Contract {
-    #[inline]
-    pub fn new(builder: Builder) -> Self {
-        let mut inner = builder.build();
-        let always_true = inner.get_user_defined_typed_func("always_true");
+fn bench_state_operations(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut context = create_test_context();
 
-        Self { inner, always_true }
-    }
+    c.bench_function("store_state", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let state = State { value: black_box(42) };
+                context.store_state(&state).await.unwrap();
+            });
+        });
+    });
 
-    #[inline]
-    pub fn always_true(&mut self) -> bool {
-        let Self { always_true, inner } = self;
-        let ctx = inner.allocate_context();
-
-        always_true
-            .call(inner.store_mut(), ctx)
-            .expect("failed to call `always_true` function");
-
-        let result = inner
-            .store_mut()
-            .data_mut()
-            .take_result()
-            .expect("always_true should always return something");
-
-        borsh::from_slice(&result).expect("failed to deserialize result")
-    }
+    c.bench_function("get_state", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let state: State = context.get_state().await.unwrap().unwrap();
+                black_box(state);
+            });
+        });
+    });
 }
 
-pub struct Nft {
-    inner: TestCrate,
-    mint: UserDefinedFn,
+fn bench_balance_operations(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut context = create_test_context();
+    let addr = context.actor().clone();
+
+    c.bench_function("transfer_balance", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let amount = black_box(100);
+                let to = addr.clone();
+                context.transfer(&addr, &to, amount).await.unwrap();
+            });
+        });
+    });
+
+    c.bench_function("get_balance", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let balance = context.get_balance(&addr).await.unwrap();
+                black_box(balance);
+            });
+        });
+    });
 }
 
-impl Nft {
-    #[inline]
-    pub fn new(builder: Builder) -> Self {
-        let mut inner = builder.build();
-        let mint = inner.get_user_defined_typed_func("mint");
-
-        Self { inner, mint }
-    }
-
-    #[inline]
-    pub fn mint(&mut self, address: Address, id: u64) {
-        let Self { mint, inner } = self;
-
-        let params = inner.allocate_params(&(address, id));
-
-        mint.call(inner.store_mut(), params)
-            .expect("failed to call `mint` function");
-
-        let result = inner
-            .store_mut()
-            .data_mut()
-            .take_result()
-            .expect("mint should always return something");
-
-        borsh::from_slice(&result).expect("failed to deserialize result")
-    }
-}
+criterion_group!(benches, bench_state_operations, bench_balance_operations);
+criterion_main!(benches);

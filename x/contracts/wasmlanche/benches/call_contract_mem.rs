@@ -1,21 +1,21 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use contracts::{Contract, Nft};
-use std::hint::black_box;
-use wasmlanche::Address;
-use wasmlanche_test::Builder;
+use iai::black_box;
+use wasmlanche::types::Address;
+use wasmlanche_test::create_test_context;
 
-mod contracts;
+fn bench_call_contract() -> Vec<u8> {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut context = create_test_context();
+    let target = Address::from([0u8; 33]);
 
-iai::main!(call_contract, call_nft_mint);
-
-fn call_contract() {
-    let builder = Builder::new("test-crate");
-    Contract::new(builder).always_true();
+    rt.block_on(async {
+        context
+            .call_contract(&target.as_bytes(), "test", &[], black_box(1000))
+            .await
+            .unwrap()
+    })
 }
 
-fn call_nft_mint() {
-    let builder = Builder::new("nft");
-    Nft::new(builder).mint(Address::new(black_box([2; 33])), black_box(0));
-}
+iai::main!(bench_call_contract);

@@ -4,17 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["lib"]
+crate-type = ["cdylib", "lib"]
 
 [features]
 bindings = ["wasmlanche/bindings"]
 test = ["wasmlanche/test"]
 
 [dependencies]
-wasmlanche = { workspace = true, features = ["debug"] }
-
-[dev-dependencies]
-wasmlanche = { workspace = true, features = ["debug", "test"] }
+wasmlanche = { workspace = true, default-features = false, features = ["wasm"] }
 
 [build-dependencies]
 wasmlanche = { workspace = true, features = ["build"] }

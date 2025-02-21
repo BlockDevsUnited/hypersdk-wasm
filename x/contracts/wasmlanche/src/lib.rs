@@ -9,7 +9,7 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-mod build;
+pub mod build;
 pub mod context;
 pub mod error;
 pub mod events;

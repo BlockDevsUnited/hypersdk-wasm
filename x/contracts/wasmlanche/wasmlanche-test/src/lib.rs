@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
     process::Command,
 };
-use wasmlanche::{Address, ID_LEN};
+use wasmlanche::types::{Address, ID_LEN};
 use wasmtime::{
     Caller, Config, Engine, Extern, Instance, Linker, Memory, Module, OptLevel, Store, StoreLimits,
     StoreLimitsBuilder, TypedFunc,
@@ -323,6 +323,21 @@ impl Context {
         bytes.extend_from_slice(&self.action_id);
         bytes
     }
+}
+
+use wasmlanche::{
+    Context as WasmlancheContext,
+    host::{Host, HostState},
+    types::WasmlAddress,
+};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+pub fn create_test_context() -> WasmlancheContext {
+    let state = Arc::new(RwLock::new(HostState::default()));
+    let host = Host::new(state);
+    let actor = WasmlAddress::try_from(&[0u8; 33][..]).unwrap();
+    WasmlancheContext::new(actor, 0, 0, Arc::new(RwLock::new(host)), None)
 }
 
 pub struct TestCrate {

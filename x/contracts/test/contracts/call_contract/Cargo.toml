@@ -8,6 +8,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wasmlanche = { workspace = true }
+borsh = { version = "0.10", default-features = false }
+sdk-macros = { workspace = true }
+getrandom = { version = "0.2", features = ["js"] }
 
 [build-dependencies]
 wasmlanche = { workspace = true, features = ["build"] }
