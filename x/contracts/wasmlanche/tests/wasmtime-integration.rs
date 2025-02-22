@@ -12,7 +12,7 @@ const TEST_PKG: &str = "test-crate";
 
 #[tokio::test]
 async fn test_allocate_context() {
-    let mut simulator = SimulatorImpl::new().await;
+    let mut simulator = SimulatorImpl::new().await.expect("Failed to create simulator");
     let actor = simulator.store.data().actor.clone();
     let result = simulator.execute(
         &actor,
@@ -63,8 +63,36 @@ async fn allocate_data_size_plus_one() {
     assert_eq!(highest, 131109, "Highest address should match simulator's allocation");
 }
 
+#[tokio::test]
+async fn test_host_functions() {
+    let mut simulator = SimulatorImpl::new().await.expect("Failed to create simulator");
+    let actor = simulator.store.data().actor.clone();
+    let result = simulator.execute(
+        &actor,
+        &[],
+        "test",
+        &[],
+        0,
+    ).await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_host_functions_with_state() {
+    let mut simulator = SimulatorImpl::new().await.expect("Failed to create simulator");
+    let actor = simulator.store.data().actor.clone();
+    let result = simulator.execute(
+        &actor,
+        &[],
+        "test",
+        &[],
+        0,
+    ).await;
+    assert!(result.is_ok());
+}
+
 async fn build_test_crate() -> TestCrate {
-    let simulator = SimulatorImpl::new().await;
+    let simulator = SimulatorImpl::new().await.expect("Failed to create simulator");
 
     TestCrate {
         inner: simulator,

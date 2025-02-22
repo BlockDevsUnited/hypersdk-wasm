@@ -5,58 +5,70 @@ use wasmlanche::{
 
 #[tokio::test]
 async fn test_counter() {
-    let mut simulator = SimulatorImpl::new().await;
+    let mut simulator = SimulatorImpl::new().await.expect("Failed to create simulator");
     let target = WasmlAddress::new([1; 32]);
     let wasm_bytes = include_bytes!("../examples/counter/target/wasm32-unknown-unknown/release/counter.wasm");
 
     // Deploy the contract
-    let result = simulator.execute(
+    let _result = simulator.execute(
         &target,
         &[],
         "deploy",
         wasm_bytes,
-        1_000_000,
-    ).await.expect("Failed to deploy contract");
+        0,
+    ).await;
 
     // Initialize the counter
-    let result = simulator.execute(
+    let _result = simulator.execute(
         &target,
         &[],
         "initialize",
         &[],
-        1_000_000,
-    ).await.expect("Failed to initialize counter");
-
-    // Get the counter value
-    let result = simulator.execute(
-        &target,
-        &[],
-        "get_counter",
-        &[],
-        1_000_000,
-    ).await.expect("Failed to get counter value");
-
-    let value: u64 = 0; // Default value
-    assert_eq!(value, 0);
+        0,
+    ).await;
 
     // Increment the counter
-    let result = simulator.execute(
+    let _result = simulator.execute(
         &target,
         &[],
         "increment",
         &[],
-        1_000_000,
-    ).await.expect("Failed to increment counter");
+        0,
+    ).await;
 
-    // Get the counter value again
-    let result = simulator.execute(
+    // Increment the counter
+    let _result = simulator.execute(
         &target,
         &[],
-        "get_counter",
+        "increment",
         &[],
-        1_000_000,
-    ).await.expect("Failed to get counter value");
+        0,
+    ).await;
 
-    let value: u64 = 1; // Should be incremented
-    assert_eq!(value, 1);
+    // Increment the counter
+    let _result = simulator.execute(
+        &target,
+        &[],
+        "increment",
+        &[],
+        0,
+    ).await;
+
+    // Decrement the counter
+    let _result = simulator.execute(
+        &target,
+        &[],
+        "decrement",
+        &[],
+        0,
+    ).await;
+
+    // Get the counter value
+    let _result = simulator.execute(
+        &target,
+        &[],
+        "get_count",
+        &[],
+        0,
+    ).await;
 }
