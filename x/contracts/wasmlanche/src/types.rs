@@ -152,6 +152,12 @@ impl From<&[u8]> for WasmlAddress {
     }
 }
 
+impl AsRef<[u8]> for WasmlAddress {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct ContractInput {
     pub method: Vec<u8>,

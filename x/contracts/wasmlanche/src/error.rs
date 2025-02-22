@@ -20,6 +20,7 @@ pub enum Error {
     DataTooLarge(&'static str),
     TooManyEvents(&'static str),
     InvalidChain(&'static str),
+    OutOfGas(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -38,6 +39,7 @@ impl fmt::Display for Error {
             Error::DataTooLarge(msg) => write!(f, "Data too large: {}", msg),
             Error::TooManyEvents(msg) => write!(f, "Too many events: {}", msg),
             Error::InvalidChain(msg) => write!(f, "Invalid chain: {}", msg),
+            Error::OutOfGas(msg) => write!(f, "Out of gas: {}", msg),
         }
     }
 }

@@ -71,26 +71,57 @@ pub fn combine_last_bit_of_each_id_byte(context: &mut Context) -> u32 {
 }
 
 #[public]
-pub fn allocate_context(_: &mut Context) -> u32 {
+pub fn allocate_context(_: &mut Context) -> i32 {
     let layout = Layout::from_size_align(mem::size_of::<Context>(), 8).unwrap();
     let ptr = unsafe { ALLOC.alloc(layout) };
     if ptr.is_null() {
-        panic!("failed to allocate memory");
+        return -1; // Return error code instead of panicking
     }
-    ptr as u32
+    ptr as i32
 }
 
 #[public]
-pub fn allocate(_context: &mut Context, data: &[u8]) -> u32 {
-    let layout = Layout::from_size_align(data.len(), 8).unwrap();
-    let ptr = unsafe { ALLOC.alloc(layout) };
-    if ptr.is_null() {
-        panic!("failed to allocate memory");
+pub fn allocate(_context: &mut Context, data_ptr: i32, size: i32) -> i32 {
+    if size <= 0 {
+        return -1;
     }
-    unsafe {
-        ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+
+    // Allocate new memory first
+    let layout = Layout::from_size_align(size as usize, 8).unwrap();
+    let new_ptr = unsafe { ALLOC.alloc(layout) };
+    if new_ptr.is_null() {
+        return -1;
     }
-    ptr as u32
+
+    // Copy data if source pointer is non-zero
+    if data_ptr != 0 {
+        // Check if source pointer is valid
+        let source_end = data_ptr.checked_add(size)
+            .ok_or_else(|| -1)
+            .unwrap_or(-1);
+        if source_end < 0 {
+            unsafe { ALLOC.dealloc(new_ptr as *mut u8, layout) };
+            return -1; // Use consistent error code
+        }
+
+        // Copy the data
+        unsafe {
+            // Get a slice of the source memory
+            let source = core::slice::from_raw_parts(data_ptr as *const u8, size as usize);
+            // Get a slice of the destination memory
+            let dest = core::slice::from_raw_parts_mut(new_ptr, size as usize);
+            // Copy the data
+            dest.copy_from_slice(source);
+        }
+    } else {
+        // Initialize memory to zero if no source data
+        unsafe {
+            core::ptr::write_bytes(new_ptr, 0, size as usize);
+        }
+    }
+
+    // Return the pointer to the newly allocated memory
+    new_ptr as i32
 }
 
 #[public]

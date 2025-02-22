@@ -24,7 +24,7 @@ use crate::{
     state::{StateAccess, StateKey, Error as StateError},
 };
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, PartialEq, BorshSerialize, BorshDeserialize)]
 pub enum Event {
     StateChange {
         key: Vec<u8>,
@@ -36,6 +36,18 @@ pub enum Event {
         data: Vec<u8>,
         height: u64,
         timestamp: u64,
+    }
+}
+
+impl Event {
+    pub fn new(name: &str, data: &str) -> Self {
+        Event::Custom {
+            contract_addr: WasmlAddress::new([0; 32]),
+            name: name.to_string(),
+            data: data.as_bytes().to_vec(),
+            height: 0,
+            timestamp: 0,
+        }
     }
 }
 

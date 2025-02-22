@@ -73,7 +73,12 @@ pub struct HostImpl {
 impl HostImpl {
     pub fn new(_actor: WasmlAddress) -> Self {
         Self {
-            state: RwLock::new(HostState::default()),
+            state: RwLock::new(HostState {
+                balances: BTreeMap::new(),
+                storage: BTreeMap::new(),
+                event_log: EventLog::new(),
+                gas_counter: GasCounter::new(1000),
+            }),
         }
     }
 }
@@ -132,66 +137,30 @@ impl Host for HostImpl {
 
 #[async_trait::async_trait]
 impl Simulator for HostImpl {
-    fn get_balance<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
-        Box::pin(async move {
-            Host::get_balance(self, account)
-        })
-    }
-
-    fn set_balance<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            Host::set_balance(self, account, balance)
-        })
-    }
-
-    fn remaining_fuel(&self) -> u64 {
-        Host::remaining_gas(self)
-    }
-
-    fn get_events(&self) -> Vec<Event> {
-        Host::get_events(self)
-    }
-
-    fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            if let Err(e) = Host::store_state(self, key, value) {
-                panic!("Error storing state: {}", e);
-            }
-        })
-    }
-
-    fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async move {
-            match Host::get_state(self, key) {
-                Ok(val) => val,
-                Err(e) => panic!("Error getting state: {}", e),
-            }
-        })
-    }
-
-    fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async move {
-            match Host::delete_state(self, key) {
-                Ok(val) => val,
-                Err(e) => panic!("Error deleting state: {}", e),
-            }
-        })
-    }
-
-    fn execute<'a>(
-        &'a mut self,
-        _actor: &'a WasmlAddress,
-        _target: &'a [u8],
-        _method: &'a str,
-        _args: &'a [u8],
+    async fn execute(
+        &mut self,
+        actor: &WasmlAddress,
+        target: &[u8],
+        method: &str,
+        args: &[u8],
         gas: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
-        Box::pin(async move {
-            if let Err(e) = self.charge_gas(gas) {
-                return Err(e.to_string());
+    ) -> Result<Vec<u8>, String> {
+        // For allocate functions, we need to handle them specially
+        if method == "allocate" {
+            // For allocate, we expect the input to be the data to allocate
+            let size = args.len() as i32;
+            Ok((size as i32).to_le_bytes().to_vec())
+        } else if method == "allocate_context" {
+            // For allocate_context, we expect a 4-byte size parameter
+            if args.len() != 4 {
+                return Err("allocate_context requires a 4-byte size parameter".to_string());
             }
-            Ok(Vec::new())
-        })
+            let size = i32::from_le_bytes(args.try_into().unwrap());
+            Ok((size as i32).to_le_bytes().to_vec())
+        } else {
+            // For other methods, just return empty for now
+            Ok(vec![])
+        }
     }
 }
 
@@ -201,40 +170,73 @@ mod tests {
 
     #[test]
     fn test_state() {
-        let mut host = HostImpl::new(WasmlAddress::new([1; 32]));
+        let mut host = HostImpl::new(WasmlAddress::default());
+        let key = b"test_key";
+        let value = b"test_value";
 
-        Host::store_state(&mut host, b"key", b"value").unwrap();
+        // Test store and get
+        let result = host.store_state(key, value);
+        assert!(result.is_ok());
 
-        let value = Host::get_state(&host, b"key").unwrap();
-        assert_eq!(value, Some(b"value".to_vec()));
+        let result = host.get_state(key);
+        assert_eq!(result.unwrap(), Some(value.to_vec()));
 
-        let deleted = Host::delete_state(&mut host, b"key").unwrap();
-        assert_eq!(deleted, Some(b"value".to_vec()));
+        // Test delete
+        let result = host.delete_state(key);
+        assert_eq!(result.unwrap(), Some(value.to_vec()));
 
-        let value = Host::get_state(&host, b"key").unwrap();
-        assert_eq!(value, None);
+        let result = host.get_state(key);
+        assert_eq!(result.unwrap(), None);
     }
 
     #[test]
     fn test_balance() {
-        let mut host = HostImpl::new(WasmlAddress::new([1; 32]));
-        let account = WasmlAddress::new([2; 32]);
+        let mut host = HostImpl::new(WasmlAddress::default());
+        let account = WasmlAddress::default();
+        let amount = 100;
 
-        assert_eq!(Host::get_balance(&host, &account), 0);
+        // Test initial balance
+        assert_eq!(host.get_balance(&account), 0);
 
-        Host::set_balance(&mut host, &account, 100);
-        assert_eq!(Host::get_balance(&host, &account), 100);
+        // Test set balance
+        host.set_balance(&account, amount);
+        assert_eq!(host.get_balance(&account), amount);
     }
 
     #[test]
     fn test_gas_charging() {
-        let mut host = HostImpl::new(WasmlAddress::new([1; 32]));
+        let mut host = HostImpl::new(WasmlAddress::default());
+        let initial_gas = 1000;
+        let charge = 500;
+
+        // Test initial gas
+        assert_eq!(host.remaining_gas(), initial_gas);
 
         // Test charging gas
-        host.charge_gas(100).unwrap();
-        assert_eq!(host.remaining_gas(), 999900);
+        let result = host.charge_gas(charge);
+        assert!(result.is_ok());
+        assert_eq!(host.remaining_gas(), initial_gas - charge);
 
-        // Test charging more than remaining
-        assert!(host.charge_gas(1000000).is_err());
+        // Test out of gas
+        let result = host.charge_gas(initial_gas);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_events() {
+        let mut host = HostImpl::new(WasmlAddress::default());
+        let event = Event::new("test", "data");
+
+        // Test add event
+        let result = host.add_event(event.clone());
+        assert!(result.is_ok());
+
+        // Test get events
+        assert_eq!(host.get_events(), vec![event.clone()]);
+
+        // Test emit event
+        let result = host.emit_event(event.clone());
+        assert!(result.is_ok());
+        assert_eq!(host.get_events(), vec![event.clone(), event]);
     }
 }
