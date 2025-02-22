@@ -56,7 +56,7 @@ impl GasCounter {
 
     pub fn charge_gas(&mut self, amount: u64) -> Result<(), Error> {
         if amount > self.remaining {
-            return Err(Error::Gas("Out of gas".to_string()));
+            return Err(Error::Gas("Out of gas"));
         }
         self.remaining -= amount;
         Ok(())
@@ -65,72 +65,78 @@ impl GasCounter {
     pub fn charge_memory(&mut self, bytes: usize) -> Result<(), Error> {
         let gas = (bytes as u64)
             .checked_mul(GAS_MEMORY_STORE_PER_BYTE)
-            .ok_or_else(|| Error::TooExpensive("Memory operation too large".into()))?;
+            .ok_or_else(|| Error::TooExpensive("Memory operation too large"))?;
         self.charge_gas(gas)
     }
     
     pub fn charge_state_store(&mut self, key_size: usize, value_size: usize) -> Result<(), Error> {
         // Check size limits
         if key_size > MAX_STATE_KEY_SIZE {
-            return Err(Error::TooExpensive("State key too large".into()));
+            return Err(Error::TooExpensive("State key too large"));
         }
         if value_size > MAX_STATE_VALUE_SIZE {
-            return Err(Error::TooExpensive("State value too large".into()));
+            return Err(Error::TooExpensive("State value too large"));
         }
         
         // Calculate gas
         let key_gas = (key_size as u64)
             .checked_mul(GAS_STATE_STORE_PER_BYTE)
-            .ok_or_else(|| Error::TooExpensive("State operation too large".into()))?;
+            .ok_or_else(|| Error::TooExpensive("State operation too large"))?;
             
         let value_gas = (value_size as u64)
             .checked_mul(GAS_STATE_STORE_PER_BYTE)
-            .ok_or_else(|| Error::TooExpensive("State operation too large".into()))?;
+            .ok_or_else(|| Error::TooExpensive("State operation too large"))?;
             
         self.charge_gas(key_gas + value_gas)
     }
     
     pub fn charge_state_load(&mut self, key_size: usize) -> Result<(), Error> {
         if key_size > MAX_STATE_KEY_SIZE {
-            return Err(Error::TooExpensive("State key too large".into()));
+            return Err(Error::TooExpensive("State key too large"));
         }
         
         let gas = (key_size as u64)
             .checked_mul(GAS_STATE_LOAD_PER_BYTE)
-            .ok_or_else(|| Error::TooExpensive("State operation too large".into()))?;
+            .ok_or_else(|| Error::TooExpensive("State operation too large"))?;
             
         self.charge_gas(gas)
     }
     
     pub fn charge_contract_call(&mut self, args_size: usize) -> Result<(), Error> {
         let args_gas = (args_size as u64)
-            .checked_mul(GAS_MEMORY_STORE_PER_BYTE)
-            .ok_or_else(|| Error::TooExpensive("Contract call args too large".into()))?;
+            .checked_mul(GAS_MEMORY_LOAD_PER_BYTE)
+            .ok_or_else(|| Error::TooExpensive("Contract call arguments too large"))?;
             
         self.charge_gas(GAS_CONTRACT_CALL_BASE + args_gas)
     }
     
     pub fn charge_event(&mut self, name_len: usize, data_size: usize) -> Result<(), Error> {
+        // Validate sizes
         if name_len > MAX_EVENT_NAME_LENGTH {
-            return Err(Error::TooExpensive("Event name too long".into()));
+            return Err(Error::NameTooLong("Event name too long"));
         }
         if data_size > MAX_EVENT_DATA_SIZE {
-            return Err(Error::TooExpensive("Event data too large".into()));
+            return Err(Error::DataTooLarge("Event data too large"));
         }
         
+        // Calculate gas
+        let name_gas = (name_len as u64)
+            .checked_mul(GAS_EVENT_PER_BYTE)
+            .ok_or_else(|| Error::TooExpensive("Event name too large"))?;
+            
         let data_gas = (data_size as u64)
             .checked_mul(GAS_EVENT_PER_BYTE)
-            .ok_or_else(|| Error::TooExpensive("Event too large".into()))?;
+            .ok_or_else(|| Error::TooExpensive("Event data too large"))?;
             
-        self.charge_gas(GAS_EVENT_BASE + data_gas)
+        self.charge_gas(GAS_EVENT_BASE + name_gas + data_gas)
     }
     
     pub fn charge_crypto(&mut self, input_size: usize) -> Result<(), Error> {
-        let data_gas = (input_size as u64)
+        let input_gas = (input_size as u64)
             .checked_mul(GAS_CRYPTO_PER_BYTE)
-            .ok_or_else(|| Error::TooExpensive("Crypto operation too large".into()))?;
+            .ok_or_else(|| Error::TooExpensive("Crypto input too large"))?;
             
-        self.charge_gas(GAS_CRYPTO_BASE + data_gas)
+        self.charge_gas(GAS_CRYPTO_BASE + input_gas)
     }
     
     pub fn gas_remaining(&self) -> u64 {

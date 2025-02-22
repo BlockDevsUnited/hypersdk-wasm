@@ -4,11 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-wasmlanche = { workspace = true }
+wasmlanche = { path = "../../" }
+tokio = { version = "1.0", features = ["full"] }
 sdk-macros = { path = "../../../sdk-macros" }
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dev-dependencies]
-wasmlanche = { workspace = true, features = ["test"] }
+wasmlanche = { workspace = true, features = ["std"] }

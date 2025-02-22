@@ -3,40 +3,41 @@
 
 use std::io;
 use borsh::maybestd::io as borsh_io;
+use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
-    Io(io::Error),
-    State(String),
-    Event(String),
-    Gas(String),
-    Memory(String),
-    Serialization(String),
-    Contract(String),
-    Crypto(String),
-    TooExpensive(String),
-    Unknown(String),
-    NameTooLong(String),
-    DataTooLarge(String),
-    TooManyEvents(String),
+    State(&'static str),
+    Event(&'static str),
+    Gas(&'static str),
+    Memory(&'static str),
+    Serialization(&'static str),
+    Contract(&'static str),
+    Crypto(&'static str),
+    TooExpensive(&'static str),
+    Unknown(&'static str),
+    NameTooLong(&'static str),
+    DataTooLarge(&'static str),
+    TooManyEvents(&'static str),
+    InvalidChain(&'static str),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Io(e) => write!(f, "IO error: {}", e),
-            Error::State(e) => write!(f, "State error: {}", e),
-            Error::Event(e) => write!(f, "Event error: {}", e),
-            Error::Gas(e) => write!(f, "Gas error: {}", e),
-            Error::Memory(e) => write!(f, "Memory error: {}", e),
-            Error::Serialization(e) => write!(f, "Serialization error: {}", e),
-            Error::Contract(e) => write!(f, "Contract error: {}", e),
-            Error::Crypto(e) => write!(f, "Crypto error: {}", e),
-            Error::TooExpensive(e) => write!(f, "Too expensive error: {}", e),
-            Error::Unknown(e) => write!(f, "Unknown error: {}", e),
-            Error::NameTooLong(e) => write!(f, "Name too long error: {}", e),
-            Error::DataTooLarge(e) => write!(f, "Data too large error: {}", e),
-            Error::TooManyEvents(e) => write!(f, "Too many events error: {}", e),
+            Error::State(msg) => write!(f, "State error: {}", msg),
+            Error::Event(msg) => write!(f, "Event error: {}", msg),
+            Error::Gas(msg) => write!(f, "Gas error: {}", msg),
+            Error::Memory(msg) => write!(f, "Memory error: {}", msg),
+            Error::Serialization(msg) => write!(f, "Serialization error: {}", msg),
+            Error::Contract(msg) => write!(f, "Contract error: {}", msg),
+            Error::Crypto(msg) => write!(f, "Crypto error: {}", msg),
+            Error::TooExpensive(msg) => write!(f, "Too expensive: {}", msg),
+            Error::Unknown(msg) => write!(f, "Unknown error: {}", msg),
+            Error::NameTooLong(msg) => write!(f, "Name too long: {}", msg),
+            Error::DataTooLarge(msg) => write!(f, "Data too large: {}", msg),
+            Error::TooManyEvents(msg) => write!(f, "Too many events: {}", msg),
+            Error::InvalidChain(msg) => write!(f, "Invalid chain: {}", msg),
         }
     }
 }
@@ -44,22 +45,21 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Error::Io(e) => Some(e),
             _ => None,
         }
     }
 }
 
 impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Self {
-        Error::Io(err)
+    fn from(_err: io::Error) -> Self {
+        Error::Unknown("IO error occurred")
     }
 }
 
-// Instead of implementing From for borsh_io::Error, provide a helper method
+// Helper method for handling borsh::maybestd::io::Error
 impl Error {
-    pub fn from_borsh_io(err: borsh_io::Error) -> Self {
-        Error::Serialization(err.to_string())
+    pub fn from_borsh_io(_err: borsh::maybestd::io::Error) -> Self {
+        Error::Serialization("Failed to serialize/deserialize")
     }
 }
 
@@ -71,11 +71,11 @@ mod tests {
     fn test_error_conversion() {
         let io_err = io::Error::new(io::ErrorKind::Other, "test error");
         let err = Error::from(io_err);
-        assert!(matches!(err, Error::Io(_)));
+        assert!(matches!(err, Error::Unknown(_)));
 
-        let borsh_err = borsh_io::Error::new(
-            borsh_io::ErrorKind::Other,
-            "test error",
+        let borsh_err = borsh::maybestd::io::Error::new(
+            borsh::maybestd::io::ErrorKind::Other,
+            "test error"
         );
         let err = Error::from_borsh_io(borsh_err);
         assert!(matches!(err, Error::Serialization(_)));

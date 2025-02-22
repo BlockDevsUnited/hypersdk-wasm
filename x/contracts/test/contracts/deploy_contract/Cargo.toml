@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wasmlanche = { workspace = true }
+sdk-macros = { path = "../../../sdk-macros" }
 
 [build-dependencies]
 wasmlanche = { workspace = true, features = ["build"] }

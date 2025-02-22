@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-trait = { version = "0.1", default-features = false, optional = true }
 borsh = { version = "0.10", default-features = false }
 bytemuck = { version = "1.17.0", features = ["derive"] }
 cfg-if = "1.0.0"
@@ -14,15 +13,22 @@ hex = "0.4"
 parking_lot = "0.12.1"
 sdk-macros = { workspace = true }
 spin = "0.9.8"
-thiserror = { version = "1.0", optional = true }
-simulator = { path = "../simulator", default-features = false, optional = true }
-tokio = { version = "1.0", features = ["sync", "rt", "macros"], optional = true }
-wasmtime = { version = "15.0.1", features = ["async"], optional = true }
 sha2 = { version = "0.10", default-features = false }
 sha3 = { version = "0.10", default-features = false }
 curve25519-dalek = { version = "3.2", default-features = false, features = ["u64_backend"] }
-ed25519-dalek = { version = "1.0", default-features = false, features = ["u64_backend", "std"], optional = true }
-futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+simulator = { path = "../simulator", features = ["std"] }
+wasmtime = { version = "15.0.1", features = ["async"] }
+tokio = { version = "1.0", features = ["sync", "rt", "macros"] }
+thiserror = "1.0"
+async-trait = "0.1"
+ed25519-dalek = { version = "1.0", default-features = false, features = ["u64_backend", "std"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wee_alloc = "0.4"
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 env_logger = "0.11.5"
@@ -30,30 +36,20 @@ tokio = { version = "1.0", features = ["full"] }
 test-log = "0.2.14"
 test-crate = { path = "tests/test-crate" }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-simulator = { path = "../simulator", features = ["std"] }
-
 [features]
 default = ["std"]
 std = [
     "borsh/std",
-    "thiserror",
-    "wasmtime",
-    "tokio",
     "sha2/std",
     "sha3/std",
     "curve25519-dalek/std",
-    "ed25519-dalek",
-    "simulator/std",
-    "async-trait",
     "futures/std"
 ]
 wasm = []
-simulator = ["dep:simulator"]
 bindings = ["std"]
-build = ["std"]
-debug = ["std"]
 test = ["std"]
+debug = ["std"]
+build = ["std"]
 
 [package.metadata.docs.rs]
 all-features = true

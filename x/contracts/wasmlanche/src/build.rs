@@ -1,14 +1,18 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
+#[cfg(feature = "std")]
 use std::env;
+#[cfg(feature = "std")]
 use std::path::Path;
+#[cfg(feature = "std")]
 use std::process::Command;
 
 pub const BUILD_DIR_NAME: &str = "target";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RELEASE_PROFILE: &str = "release";
 
+#[cfg(feature = "std")]
 #[allow(clippy::module_name_repetitions)]
 /// Put this in your build.rs file. It currently relies on `/build` directory to be in your crate root.
 /// # Panics
@@ -118,6 +122,7 @@ pub fn build_wasm() {
     }
 }
 
+#[cfg(feature = "std")]
 fn main() {
     build_wasm();
 }

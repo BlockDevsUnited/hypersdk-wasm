@@ -15,30 +15,44 @@ use async_trait::async_trait;
 use borsh::{BorshDeserialize, BorshSerialize};
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum Error {
-    #[error("State error: {0}")]
-    StateError(String),
-    
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
+    State(String),
+    Serialization(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::State(msg) => write!(f, "State error: {}", msg),
+            Error::Serialization(msg) => write!(f, "Serialization error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<borsh::maybestd::io::Error> for Error {
+    fn from(err: borsh::maybestd::io::Error) -> Self {
+        Error::Serialization(err.to_string())
+    }
+}
+
+impl Error {
+    pub fn from_io(err: std::io::Error) -> Self {
+        Error::State(err.to_string())
+    }
 }
 
 pub trait StateKey {
     fn get_key() -> Vec<u8>;
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait StateAccess {
     async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error>;
     async fn get_state<S: BorshDeserialize + StateKey + Send + Sync>(&self) -> Result<Option<S>, Error>;
     async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, Error>;
-}
-
-impl From<borsh::maybestd::io::Error> for Error {
-    fn from(err: borsh::maybestd::io::Error) -> Self {
-        Error::SerializationError(err.to_string())
-    }
 }
 
 #[cfg(test)]
@@ -62,10 +76,11 @@ mod tests {
         state: Arc<RwLock<Option<Vec<u8>>>>,
     }
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl StateAccess for TestStateAccess {
         async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error> {
-            let bytes = state.try_to_vec().map_err(|e| Error::SerializationError(e.to_string()))?;
+            let bytes = borsh::BorshSerialize::try_to_vec(state)
+                .map_err(|err| Error::Serialization(err.to_string()))?;
             let mut state_guard = self.state.write().await;
             *state_guard = Some(bytes);
             Ok(())
@@ -76,7 +91,7 @@ mod tests {
             match &*state_guard {
                 Some(bytes) => {
                     let state = borsh::BorshDeserialize::try_from_slice(bytes)
-                        .map_err(|e| Error::SerializationError(e.to_string()))?;
+                        .map_err(|err| Error::Serialization(err.to_string()))?;
                     Ok(Some(state))
                 }
                 None => Ok(None),
@@ -85,11 +100,10 @@ mod tests {
 
         async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, Error> {
             let mut state_guard = self.state.write().await;
-            let old_state = state_guard.take();
-            match old_state {
+            match state_guard.take() {
                 Some(bytes) => {
                     let state = borsh::BorshDeserialize::try_from_slice(&bytes)
-                        .map_err(|e| Error::SerializationError(e.to_string()))?;
+                        .map_err(|err| Error::Serialization(err.to_string()))?;
                     Ok(Some(state))
                 }
                 None => Ok(None),

@@ -3,11 +3,12 @@ name = "state_access"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+wasmlanche = { path = "../../../wasmlanche" }
+sdk-macros = { path = "../../../sdk-macros" }
+
 [lib]
 crate-type = ["cdylib"]
-
-[dependencies]
-wasmlanche = { workspace = true }
 
 [build-dependencies]
 wasmlanche = { workspace = true, features = ["build"] }

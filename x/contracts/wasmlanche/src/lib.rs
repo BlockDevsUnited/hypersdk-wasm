@@ -9,7 +9,17 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-mod build;
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+
+#[cfg(all(target_arch = "wasm32", not(feature = "std")))]
+#[alloc_error_handler]
+fn alloc_error(_: core::alloc::Layout) -> ! {
+    core::panic!("memory allocation error")
+}
+
+pub mod build;
 pub mod context;
 pub mod error;
 pub mod events;
@@ -92,10 +102,6 @@ pub mod prelude {
 }
 
 pub use borsh;
-
-#[cfg(target_arch = "wasm32")]
-#[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[cfg(target_arch = "wasm32")]
 #[derive(borsh::BorshDeserialize, borsh::BorshSerialize)]

@@ -1,7 +1,8 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use wasmlanche::{public, Context};
+use sdk_macros::public;
+use wasmlanche::Context;
 
 #[public]
 pub async fn out_of_fuel(ctx: &mut Context, target: &[u8]) -> bool {

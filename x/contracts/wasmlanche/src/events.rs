@@ -1,5 +1,6 @@
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
+use borsh::maybestd::string::ToString as BorshToString;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
@@ -46,38 +47,26 @@ impl EventLog {
         }
     }
 
-    pub fn add_event(&mut self, event: Event) -> Result<(), EventError> {
+    pub fn add_event(&mut self, event: Event) -> Result<(), Error> {
         match &event {
             Event::StateChange { key, value } => {
                 if key.len() + value.len() > MAX_EVENT_DATA_SIZE {
-                    return Err(Error::DataTooLarge(format!(
-                        "State change data must be at most {} bytes",
-                        MAX_EVENT_DATA_SIZE
-                    )));
+                    return Err(Error::DataTooLarge("State change data exceeds maximum size"));
                 }
                 self.state.insert(key.clone(), value.clone());
             }
             Event::Custom { name, data, .. } => {
                 if name.len() > MAX_EVENT_NAME_LENGTH {
-                    return Err(Error::NameTooLong(format!(
-                        "Event name must be at most {} bytes",
-                        MAX_EVENT_NAME_LENGTH
-                    )));
+                    return Err(Error::NameTooLong("Event name exceeds maximum length"));
                 }
                 if data.len() > MAX_EVENT_DATA_SIZE {
-                    return Err(Error::DataTooLarge(format!(
-                        "Event data must be at most {} bytes",
-                        MAX_EVENT_DATA_SIZE
-                    )));
+                    return Err(Error::DataTooLarge("Event data exceeds maximum size"));
                 }
             }
         }
         
         if self.events.len() >= MAX_EVENTS_PER_CONTRACT {
-            return Err(Error::TooManyEvents(format!(
-                "Contract can emit at most {} events",
-                MAX_EVENTS_PER_CONTRACT
-            )));
+            return Err(Error::TooManyEvents("Maximum number of events exceeded"));
         }
         self.events.push_back(event);
         Ok(())
@@ -107,36 +96,33 @@ impl EventLog {
 
 #[async_trait]
 impl StateAccess for EventLog {
-    async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(
-        &mut self,
-        state: &S,
-    ) -> Result<(), StateError> {
-        let bytes = state.try_to_vec().map_err(|e| StateError::SerializationError(e.to_string()))?;
-        let key = S::get_key();
-        self.store_state(&key, &bytes)
-            .map_err(|e| StateError::StateError(e.to_string()))
+    async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), StateError> {
+        let bytes = state.try_to_vec()
+            .map_err(|e| StateError::Serialization(e.to_string()))?;
+        self.store_state(&S::get_key(), &bytes)
+            .map_err(|e| StateError::State(e.to_string()))
     }
 
-    async fn get_state<S: BorshDeserialize + StateKey + Send + Sync>(
-        &self,
-    ) -> Result<Option<S>, StateError> {
-        let key = S::get_key();
-        match self.get_state(&key) {
-            Some(value) => Ok(Some(S::try_from_slice(value)
-                .map_err(|e| StateError::SerializationError(e.to_string()))?)),
+    async fn get_state<S: BorshDeserialize + StateKey + Send + Sync>(&self) -> Result<Option<S>, StateError> {
+        match self.get_state(&S::get_key()) {
+            Some(bytes) => {
+                S::try_from_slice(bytes)
+                    .map(Some)
+                    .map_err(|e| StateError::Serialization(e.to_string()))
+            }
             None => Ok(None),
         }
     }
 
-    async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(
-        &mut self,
-    ) -> Result<Option<S>, StateError> {
-        let key = S::get_key();
-        match self.delete_state(&key) {
-            Ok(Some(value)) => Ok(Some(S::try_from_slice(&value)
-                .map_err(|e| StateError::SerializationError(e.to_string()))?)),
+    async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, StateError> {
+        match self.delete_state(&S::get_key()) {
+            Ok(Some(bytes)) => {
+                S::try_from_slice(&bytes)
+                    .map(Some)
+                    .map_err(|e| StateError::Serialization(e.to_string()))
+            }
             Ok(None) => Ok(None),
-            Err(e) => Err(StateError::StateError(e.to_string())),
+            Err(e) => Err(StateError::State(e.to_string())),
         }
     }
 }
@@ -147,7 +133,13 @@ mod tests {
 
     #[derive(BorshSerialize, BorshDeserialize)]
     struct TestState {
-        value: String,
+        value: u64,
+    }
+
+    impl BorshToString for TestState {
+        fn to_string(&self) -> String {
+            format!("TestState({})", self.value)
+        }
     }
 
     impl StateKey for TestState {
@@ -162,18 +154,18 @@ mod tests {
         
         // Test state operations
         let state = TestState {
-            value: "test".to_string(),
+            value: 1,
         };
         
         StateAccess::store_state(&mut log, &state).await.unwrap();
         
         let retrieved = StateAccess::get_state::<TestState>(&log).await.unwrap();
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().value, "test");
+        assert_eq!(retrieved.unwrap().value, 1);
         
         let deleted = StateAccess::delete_state::<TestState>(&mut log).await.unwrap();
         assert!(deleted.is_some());
-        assert_eq!(deleted.unwrap().value, "test");
+        assert_eq!(deleted.unwrap().value, 1);
         
         let retrieved = StateAccess::get_state::<TestState>(&log).await.unwrap();
         assert!(retrieved.is_none());
@@ -203,7 +195,7 @@ mod tests {
             height: 1,
             timestamp: 1000,
         };
-        assert!(matches!(log.add_event(event), Err(EventError::NameTooLong(_))));
+        assert!(matches!(log.add_event(event), Err(Error::NameTooLong(_))));
 
         // Test data too large
         let large_data = vec![0; MAX_EVENT_DATA_SIZE + 1];
@@ -214,14 +206,14 @@ mod tests {
             height: 1,
             timestamp: 1000,
         };
-        assert!(matches!(log.add_event(event), Err(EventError::DataTooLarge(_))));
+        assert!(matches!(log.add_event(event), Err(Error::DataTooLarge(_))));
 
         // Test state change event
         let event = Event::StateChange {
             key: vec![1; MAX_EVENT_DATA_SIZE / 2],
             value: vec![2; MAX_EVENT_DATA_SIZE / 2 + 1],
         };
-        assert!(matches!(log.add_event(event), Err(EventError::DataTooLarge(_))));
+        assert!(matches!(log.add_event(event), Err(Error::DataTooLarge(_))));
 
         // Test too many events
         let mut log = EventLog::new();
@@ -243,7 +235,7 @@ mod tests {
             height: 1,
             timestamp: 1000,
         };
-        assert!(matches!(log.add_event(event), Err(EventError::TooManyEvents(_))));
+        assert!(matches!(log.add_event(event), Err(Error::TooManyEvents(_))));
     }
 
     #[test]
@@ -271,7 +263,7 @@ mod tests {
             height: 1,
             timestamp: 1000,
         };
-        assert!(matches!(log.add_event(event), Err(EventError::TooManyEvents(_))));
+        assert!(matches!(log.add_event(event), Err(Error::TooManyEvents(_))));
 
         // Test clear
         log.clear();

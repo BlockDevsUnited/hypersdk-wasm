@@ -27,6 +27,6 @@ strip = true
 
 [workspace.dependencies]
 sdk-macros = { path = "x/contracts/sdk-macros" }
-wasmlanche = { path = "x/contracts/wasmlanche" }
+wasmlanche = { path = "x/contracts/wasmlanche", default-features = false }
 simulator = { path = "x/contracts/simulator" }
 thiserror = "1.0.61"

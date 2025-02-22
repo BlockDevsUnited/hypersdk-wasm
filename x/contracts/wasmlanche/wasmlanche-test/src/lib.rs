@@ -8,7 +8,8 @@ use std::{
     path::PathBuf,
     process::Command,
 };
-use wasmlanche::{Address, ID_LEN};
+use wasmlanche::types::Address;
+use wasmlanche::ID_LEN;
 use wasmtime::{
     Caller, Config, Engine, Extern, Instance, Linker, Memory, Module, OptLevel, Store, StoreLimits,
     StoreLimitsBuilder, TypedFunc,

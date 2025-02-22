@@ -8,6 +8,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wasmlanche = { workspace = true }
+sdk-macros = { workspace = true }
+borsh = { version = "0.10", default-features = false }
 
 [build-dependencies]
 wasmlanche = { workspace = true, features = ["build"] }

@@ -60,16 +60,12 @@ impl Host {
 
     pub async fn store_state(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         let mut state = self.state.write().await;
-        state.event_log.store_state(key, value).map_err(|e| Error::Event(e.to_string()))
+        state.event_log.store_state(key, value).map_err(|_| Error::Event("Failed to store state"))
     }
 
     pub async fn delete_state(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
         let mut state = self.state.write().await;
-        let existing = state.event_log.get_state(key).cloned();
-        if existing.is_some() {
-            state.event_log.delete_state(key).map_err(|e| Error::Event(e.to_string()))?;
-        }
-        Ok(existing)
+        state.event_log.delete_state(key).map_err(|_| Error::Event("Failed to delete state"))
     }
 
     pub async fn execute(
@@ -153,9 +149,17 @@ impl Host {
         sig: &[u8],
     ) -> Result<bool, Error> {
         let public_key = PublicKey::from_bytes(pubkey)
-            .map_err(|e| Error::Crypto(e.to_string()))?;
+            .map_err(|_| Error::Crypto("Invalid public key format"))?;
         let signature = Signature::from_bytes(sig)
-            .map_err(|e| Error::Crypto(e.to_string()))?;
+            .map_err(|_| Error::Crypto("Invalid signature format"))?;
+        Ok(public_key.verify(msg, &signature).is_ok())
+    }
+
+    pub async fn verify_signature(&self, msg: &[u8], sig: &[u8], pk: &[u8]) -> Result<bool, Error> {
+        let public_key = PublicKey::from_bytes(pk)
+            .map_err(|_| Error::Crypto("Invalid public key format"))?;
+        let signature = Signature::from_bytes(sig)
+            .map_err(|_| Error::Crypto("Invalid signature format"))?;
         Ok(public_key.verify(msg, &signature).is_ok())
     }
 }
@@ -186,19 +190,31 @@ impl Simulator for Host {
 
     fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            self.store_state(key, value).await.unwrap_or(());
+            if let Err(e) = self.store_state(key, value).await {
+                panic!("Error storing state: {}", e);
+            }
         })
     }
 
     fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            self.get_state(key).await.unwrap_or(None)
+            match self.get_state(key).await {
+                Ok(val) => val,
+                Err(e) => {
+                    panic!("Error getting state: {}", e);
+                }
+            }
         })
     }
 
     fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            self.delete_state(key).await.unwrap_or(None)
+            match self.delete_state(key).await {
+                Ok(val) => val,
+                Err(e) => {
+                    panic!("Error deleting state: {}", e);
+                }
+            }
         })
     }
 
