@@ -1,21 +1,17 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
+#![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+extern crate alloc;
 
-#[cfg(feature = "std")]
-use std::boxed::Box;
-#[cfg(feature = "std")]
-use std::vec::Vec;
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::maybestd::io::{self, Write, Read, Result as IoResult};
 use bytemuck::{Pod, Zeroable};
+use core::fmt;
 use core::mem::size_of;
-use std::io::{Read, Result as IoResult};
-use std::fmt;
+use hex;
 
 /// Byte length of an action ID.
 pub const ID_LEN: usize = 32;
@@ -28,28 +24,26 @@ pub struct Id {
 }
 
 impl Id {
-    /// Create a new ID from bytes.
     pub fn new(bytes: [u8; ID_LEN]) -> Self {
         Self { bytes }
     }
 
-    /// Get the bytes of the ID.
     pub fn as_bytes(&self) -> &[u8; ID_LEN] {
         &self.bytes
     }
 }
 
 impl BorshSerialize for Id {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> IoResult<()> {
         writer.write_all(&self.bytes)
     }
 }
 
 impl BorshDeserialize for Id {
-    fn deserialize(buf: &mut &[u8]) -> std::io::Result<Self> {
+    fn deserialize(buf: &mut &[u8]) -> IoResult<Self> {
         if buf.len() < ID_LEN {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
                 "buffer too short for Id",
             ));
         }
@@ -66,7 +60,6 @@ impl BorshDeserialize for Id {
     }
 }
 
-/// The ID bytes of a contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContractId {
     bytes: [u8; 32]
@@ -80,19 +73,23 @@ impl ContractId {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.bytes
     }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.bytes.to_vec()
+    }
 }
 
 impl BorshSerialize for ContractId {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> IoResult<()> {
         writer.write_all(&self.bytes)
     }
 }
 
 impl BorshDeserialize for ContractId {
-    fn deserialize(buf: &mut &[u8]) -> std::io::Result<Self> {
+    fn deserialize(buf: &mut &[u8]) -> IoResult<Self> {
         if buf.len() < 32 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
                 "buffer too short for ContractId",
             ));
         }
@@ -106,6 +103,75 @@ impl BorshDeserialize for ContractId {
         let mut bytes = [0u8; 32];
         reader.read_exact(&mut bytes)?;
         Ok(Self { bytes })
+    }
+}
+
+/// Contract address type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, BorshSerialize, BorshDeserialize)]
+pub struct WasmlAddress([u8; 32]);
+
+impl Default for WasmlAddress {
+    fn default() -> Self {
+        Self([0; 32])
+    }
+}
+
+impl WasmlAddress {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for WasmlAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hex_str = hex::encode(&self.0);
+        f.write_str("0x")?;
+        f.write_str(&hex_str)
+    }
+}
+
+impl From<Vec<u8>> for WasmlAddress {
+    fn from(bytes: Vec<u8>) -> Self {
+        assert_eq!(bytes.len(), 32);
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Self(arr)
+    }
+}
+
+impl From<&[u8]> for WasmlAddress {
+    fn from(bytes: &[u8]) -> Self {
+        assert_eq!(bytes.len(), 32);
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(bytes);
+        Self(arr)
+    }
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct ContractInput {
+    pub method: Vec<u8>,
+    pub params: Vec<u8>,
+}
+
+impl ContractInput {
+    pub fn new(method: Vec<u8>, params: Vec<u8>) -> Self {
+        Self { method, params }
+    }
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct ContractOutput {
+    pub data: Vec<u8>,
+}
+
+impl ContractOutput {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data }
     }
 }
 
@@ -140,68 +206,14 @@ impl From<Gas> for u64 {
 /// Represents an address where a smart contract is deployed.
 #[derive(Clone, Copy, Ord, PartialOrd, PartialEq, Eq, BorshSerialize, BorshDeserialize, Hash, Debug)]
 #[repr(transparent)]
-pub struct Address([u8; 33]);
-
-// Address is a transparent wrapper around a fixed-size byte array, which is safe to implement Pod and Zeroable for
-// Safety: Address is a transparent wrapper around [u8; 33] which is both Pod and Zeroable
-unsafe impl Zeroable for Address {}
-unsafe impl Pod for Address {}
+pub struct Address {
+    bytes: [u8; 33],
+}
 
 impl Address {
     pub const LEN: usize = 33;
-    pub const ZERO: Self = Self([0; Self::LEN]);
 
-    // Constructor function for Address
-    #[must_use]
     pub fn new(bytes: [u8; Self::LEN]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl Default for Address {
-    fn default() -> Self {
-        Self([0; Self::LEN])
-    }
-}
-
-impl IntoIterator for Address {
-    type Item = u8;
-    type IntoIter = core::array::IntoIter<Self::Item, { Address::LEN }>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        IntoIterator::into_iter(self.0)
-    }
-}
-
-impl AsRef<[u8]> for Address {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl From<[u8; 33]> for Address {
-    fn from(bytes: [u8; 33]) -> Self {
-        Self(bytes)
-    }
-}
-
-impl From<&[u8; 33]> for Address {
-    fn from(bytes: &[u8; 33]) -> Self {
-        Self(*bytes)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub struct WasmlAddress {
-    bytes: Vec<u8>
-}
-
-impl WasmlAddress {
-    pub fn new(bytes: Vec<u8>) -> Self {
         Self { bytes }
     }
 
@@ -210,44 +222,39 @@ impl WasmlAddress {
     }
 }
 
-impl BorshSerialize for WasmlAddress {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        BorshSerialize::serialize(&self.bytes, writer)
+impl Default for Address {
+    fn default() -> Self {
+        Self { bytes: [0; Self::LEN] }
     }
 }
 
-impl BorshDeserialize for WasmlAddress {
-    fn deserialize(buf: &mut &[u8]) -> std::io::Result<Self> {
-        let bytes = Vec::deserialize(buf)?;
-        Ok(Self { bytes })
-    }
+impl IntoIterator for Address {
+    type Item = u8;
+    type IntoIter = core::array::IntoIter<Self::Item, { Address::LEN }>;
 
-    fn deserialize_reader<R: Read>(reader: &mut R) -> IoResult<Self> {
-        let bytes = Vec::deserialize_reader(reader)?;
-        Ok(Self { bytes })
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIterator::into_iter(self.bytes)
     }
 }
 
-impl fmt::Display for WasmlAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "0x{}", hex::encode(&self.bytes))
+impl AsRef<[u8]> for Address {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
-impl From<Vec<u8>> for WasmlAddress {
-    fn from(bytes: Vec<u8>) -> Self {
+impl From<[u8; 33]> for Address {
+    fn from(bytes: [u8; 33]) -> Self {
         Self { bytes }
     }
 }
 
-impl From<&[u8]> for WasmlAddress {
-    fn from(bytes: &[u8]) -> Self {
-        Self { bytes: bytes.to_vec() }
+impl From<&[u8; 33]> for Address {
+    fn from(bytes: &[u8; 33]) -> Self {
+        Self { bytes: *bytes }
     }
 }
 
-#[cfg(not(feature = "std"))]
-use alloc::string::String;
-
-#[cfg(feature = "std")]
-use std::string::String;
+// Address is a transparent wrapper around a fixed-size byte array, which is safe to implement Pod and Zeroable for
+unsafe impl Zeroable for Address {}
+unsafe impl Pod for Address {}

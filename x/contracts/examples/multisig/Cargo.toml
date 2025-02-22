@@ -3,16 +3,18 @@ name = "multisig"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["lib"]
+
+[features]
+bindings = ["wasmlanche/bindings"]
+test = ["wasmlanche/test"]
+
 [dependencies]
-wasmlanche.workspace = true
+wasmlanche = { workspace = true, features = ["debug"] }
 
 [dev-dependencies]
-counter = { path = "../counter", features = ["bindings"] }
 wasmlanche = { workspace = true, features = ["debug", "test"] }
 
 [build-dependencies]
-wasmlanche = { workspace = true, features = ["build"] }
-
-[features]
-debug = ["wasmlanche/debug"]
-bindings = []
+wasmlanche-build = { path = "../../wasmlanche-build" }

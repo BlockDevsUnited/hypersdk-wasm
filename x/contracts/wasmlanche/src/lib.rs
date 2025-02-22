@@ -115,23 +115,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_context() {
-        let state = Arc::new(RwLock::new(host::HostState::default()));
-        let host = Arc::new(RwLock::new(Host::new(state)));
-        let mut context = Context::new(
-            WasmlAddress::new(vec![1, 2, 3]),
-            0,
-            0,
-            host,
-            None,
-        );
-
-        // Test event handling
-        let event = Event::StateChange {
-            key: b"key".to_vec(),
-            value: b"value".to_vec(),
-        };
-        context.add_event(event).await.unwrap();
-        let events = context.get_events().await;
+        let mut context = Context::with_actor(WasmlAddress::new([1; 32]));
+        
+        context.store_by_key(b"test", b"test".to_vec()).unwrap();
+        let events = context.get_events();
         assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::StateChange { .. }));
     }
 }

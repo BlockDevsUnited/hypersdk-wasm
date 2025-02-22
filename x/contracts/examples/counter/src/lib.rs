@@ -1,5 +1,8 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
+#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
 
 use wasmlanche::{public, state_schema, Address, Context};
 
@@ -14,7 +17,7 @@ state_schema! {
 #[public]
 pub fn get_value(context: &mut Context, of: Address) -> Count {
     context
-        .get(Counter(of))
+        .get_state(&Counter(of))
         .expect("state corrupt")
         .unwrap_or_default()
 }
@@ -25,13 +28,13 @@ pub fn inc(context: &mut Context, to: Address, amount: Count) -> bool {
     let counter = amount + get_value(context, to);
 
     context
-        .store_by_key(Counter(to), counter)
+        .store_state(&Counter(to), &counter)
         .expect("serialization failed");
 
     true
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[cfg(not(feature = "bindings"))]
 mod tests {
     use super::*;
@@ -49,12 +52,11 @@ mod tests {
     fn test_inc() {
         let address = Address::default();
         let mut context = Context::with_actor(address);
-        let amount = 5;
 
-        let inc = inc(&mut context, address, amount);
-        assert!(inc);
+        inc(&mut context, address, 1);
+        assert_eq!(get_value(&mut context, address), 1);
 
-        let value = get_value(&mut context, address);
-        assert_eq!(value, amount);
+        inc(&mut context, address, 2);
+        assert_eq!(get_value(&mut context, address), 3);
     }
 }

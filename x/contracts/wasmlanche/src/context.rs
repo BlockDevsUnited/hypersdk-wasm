@@ -1,198 +1,255 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
-// See the file LICENSE for licensing terms.
+#![cfg_attr(not(feature = "std"), no_std)]
 
-use std::sync::Arc;
-use std::string::ToString;
 #[cfg(not(feature = "std"))]
-use alloc::string::String;
-use borsh::maybestd::string::ToString as BorshToString;
-use tokio::sync::RwLock;
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::{boxed::Box, string::{String, ToString}, vec::Vec};
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use spin::RwLock;
+
 use crate::{
-    error::Error,
     events::Event,
-    gas::GasCounter,
-    host::{Host, HostState},
-    simulator::Simulator,
-    types::{Address, Gas, WasmlAddress, ContractId},
-    state::{StateAccess, StateKey, Error as StateError},
+    host::{Host, HostImpl, HostState},
+    state::{Error as StateError, StateKey},
+    types::WasmlAddress,
 };
 
-#[derive(Debug)]
+/// Execution context for a contract
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Context {
-    actor: WasmlAddress,
-    height: u64,
-    timestamp: u64,
-    host: Arc<RwLock<Host>>,
-    gas_counter: Option<GasCounter>,
+    pub actor: WasmlAddress,
+    host: Box<dyn Host>,
+    state: RwLock<HostState>,
+}
+
+#[cfg(target_arch = "wasm32")]
+pub struct Context {
+    pub actor: WasmlAddress,
+    state: RwLock<()>,
 }
 
 impl Context {
-    pub fn new(
-        actor: WasmlAddress,
-        height: u64,
-        timestamp: u64,
-        host: Arc<RwLock<Host>>,
-        gas_counter: Option<GasCounter>,
-    ) -> Self {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new() -> Self {
+        Self::with_actor(WasmlAddress::default())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn new() -> Self {
+        Self::with_actor(WasmlAddress::default())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_actor(actor: WasmlAddress) -> Self {
         Self {
             actor,
-            height,
-            timestamp,
-            host,
-            gas_counter,
+            host: Box::new(HostImpl::new(actor)),
+            state: RwLock::new(HostState::default()),
         }
     }
 
-    pub fn actor(&self) -> &WasmlAddress {
-        &self.actor
-    }
-
-    pub async fn get_balance(&self, account: &WasmlAddress) -> Result<u64, Error> {
-        let host = self.host.read().await;
-        Ok(Simulator::get_balance(&*host, account).await)
-    }
-
-    pub async fn transfer(
-        &mut self,
-        from: &WasmlAddress,
-        to: &WasmlAddress,
-        amount: u64,
-    ) -> Result<(), Error> {
-        let mut host = self.host.write().await;
-        let from_balance = Simulator::get_balance(&*host, from).await;
-        if from_balance < amount {
-            return Err(Error::State("Insufficient balance"));
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_actor(actor: WasmlAddress) -> Self {
+        Self {
+            actor,
+            state: RwLock::new(()),
         }
-
-        Simulator::set_balance(&mut *host, from, from_balance - amount).await;
-        let to_balance = Simulator::get_balance(&*host, to).await;
-        Simulator::set_balance(&mut *host, to, to_balance + amount).await;
-        Ok(())
     }
 
-    pub async fn call_contract(
-        &mut self,
-        target: &[u8],
-        method: &str,
-        args: &[u8],
-        gas: u64,
-    ) -> Result<Vec<u8>, Error> {
-        let mut host = self.host.write().await;
-        host.execute(&self.actor, target, method, args, gas)
-            .await
-            .map_err(|_| Error::State("Failed to execute contract"))
+    /// Store a value in state
+    pub fn store<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> Result<(), StateError> {
+        let bytes = value.try_to_vec()?;
+        self.store_by_key(key, bytes)
     }
 
-    pub async fn get_events(&self) -> Vec<Event> {
-        let host = self.host.read().await;
-        host.get_events().await.unwrap_or_default()
+    /// Store raw bytes in state
+    pub fn store_by_key(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StateError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut state = self.state.write();
+            state.store(key, value.clone());
+            self.host.emit_event(Event::StateChange {
+                key: key.to_vec(),
+                value,
+            }).map_err(|_| StateError::StorageFailed)?;
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Call host function to store state
+            extern "C" {
+                fn store_state(key_ptr: *const u8, key_len: usize, value_ptr: *const u8, value_len: usize) -> i32;
+            }
+            unsafe {
+                let result = store_state(
+                    key.as_ptr(),
+                    key.len(),
+                    value.as_ptr(),
+                    value.len()
+                );
+                if result == 0 {
+                    Ok(())
+                } else {
+                    Err(StateError::StorageFailed)
+                }
+            }
+        }
     }
 
-    pub async fn add_event(&mut self, event: Event) -> Result<(), Error> {
-        let mut host = self.host.write().await;
-        host.add_event(event).await.map_err(|_| Error::Event("Failed to add event"))
+    /// Get a value from state
+    pub fn get<T: BorshDeserialize>(&self, key: &[u8]) -> Result<Option<T>, StateError> {
+        if let Some(bytes) = self.get_by_key(key)? {
+            Ok(Some(T::try_from_slice(&bytes)?))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub async fn send(&mut self, recipient: &[u8], amount: u64) -> Result<(), Error> {
-        let recipient_addr = WasmlAddress::from(recipient);
-        let actor = self.actor.clone();
-        self.transfer(&actor, &recipient_addr, amount).await
+    /// Get raw bytes from state
+    pub fn get_by_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StateError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let state = self.state.read();
+            Ok(state.get(key).cloned())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Call host function to get state
+            extern "C" {
+                fn get_state(key_ptr: *const u8, key_len: usize) -> i32;
+                fn get_value(value_ptr: *mut u8, value_len: usize) -> i32;
+            }
+            unsafe {
+                let result = get_state(key.as_ptr(), key.len());
+                if result < 0 {
+                    return Err(StateError::StorageFailed);
+                }
+                if result == 0 {
+                    return Ok(None);
+                }
+                let mut value = Vec::with_capacity(result as usize);
+                let result = get_value(value.as_mut_ptr(), result as usize);
+                if result < 0 {
+                    return Err(StateError::StorageFailed);
+                }
+                value.set_len(result as usize);
+                Ok(Some(value))
+            }
+        }
     }
 
-    pub async fn deploy(&mut self, contract_id: ContractId) -> Result<WasmlAddress, Error> {
-        let address = WasmlAddress::from(contract_id.as_bytes().as_ref());
-        let mut host = self.host.write().await;
-        let key = format!("contract:{}", hex::encode(address.as_bytes()));
-        host.store_state(key.as_bytes(), &[]).await?;
-        Ok(address)
+    /// Store state using the state schema
+    pub fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), StateError> {
+        let key = state.key();
+        let bytes = state.try_to_vec()?;
+        self.store_by_key(&key, bytes)
+    }
+
+    /// Get state using the state schema
+    pub fn get_state<S: BorshDeserialize + StateKey + Default>(&self) -> Result<Option<S>, StateError> {
+        let key = S::default().key();
+        self.get(&key)
+    }
+
+    /// Delete state using the state schema
+    pub fn delete_state<S: BorshDeserialize + StateKey + Default>(&mut self) -> Result<Option<S>, StateError> {
+        let key = S::default().key();
+        if let Some(state) = self.get_state::<S>()? {
+            self.store_by_key(&key, Vec::new())?;
+            Ok(Some(state))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get all events emitted in this context
+    pub fn get_events(&self) -> Vec<Event> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.host.get_events()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Vec::new()
+        }
     }
 }
 
-#[async_trait::async_trait]
-impl StateAccess for Context {
-    async fn store_state<S: borsh::BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), StateError> {
-        let key = S::get_key();
-        let bytes = state.try_to_vec()
-            .map_err(|e| StateError::Serialization(e.to_string()))?;
-        let mut host = self.host.write().await;
-        host.store_state(&key, &bytes)
-            .await
-            .map_err(|e| StateError::State(e.to_string()))
+#[cfg(not(target_arch = "wasm32"))]
+impl Context {
+    pub fn get_balance(&self, account: &WasmlAddress) -> u64 {
+        self.host.get_balance(account)
     }
 
-    async fn get_state<S: borsh::BorshDeserialize + StateKey + Send + Sync>(&self) -> Result<Option<S>, StateError> {
-        let key = S::get_key();
-        let host = self.host.read().await;
-        match host.get_state(&key).await {
-            Ok(Some(bytes)) => {
-                S::try_from_slice(&bytes)
-                    .map(Some)
-                    .map_err(|e| StateError::Serialization(e.to_string()))
+    pub fn set_balance(&mut self, account: &WasmlAddress, amount: u64) {
+        self.host.set_balance(account, amount)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Context {
+    pub fn get_state<S: BorshDeserialize + StateKey + Default>(&self) -> Result<Option<S>, StateError> {
+        let key = S::default().key();
+        // Call host function to get state
+        extern "C" {
+            fn get_state(key_ptr: *const u8, key_len: usize) -> i32;
+        }
+        unsafe {
+            let result = get_state(key.as_ptr(), key.len());
+            if result < 0 {
+                return Err(StateError::StorageFailed);
             }
-            Ok(None) => Ok(None),
-            Err(e) => Err(StateError::State(e.to_string())),
+            if result == 0 {
+                return Ok(None);
+            }
+            let mut value = Vec::with_capacity(result as usize);
+            extern "C" {
+                fn get_value(value_ptr: *mut u8, value_len: usize) -> i32;
+            }
+            let result = get_value(value.as_mut_ptr(), result as usize);
+            if result < 0 {
+                return Err(StateError::StorageFailed);
+            }
+            value.set_len(result as usize);
+            Ok(Some(S::try_from_slice(&value)?))
         }
     }
 
-    async fn delete_state<S: borsh::BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, StateError> {
-        let key = S::get_key();
-        let mut host = self.host.write().await;
-        match host.delete_state(&key).await {
-            Ok(Some(bytes)) => {
-                S::try_from_slice(&bytes)
-                    .map(Some)
-                    .map_err(|e| StateError::Serialization(e.to_string()))
+    pub fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), StateError> {
+        let key = state.key();
+        let bytes = state.try_to_vec()?;
+        // Call host function to store state
+        extern "C" {
+            fn store_state(key_ptr: *const u8, key_len: usize, value_ptr: *const u8, value_len: usize) -> i32;
+        }
+        unsafe {
+            let result = store_state(
+                key.as_ptr(),
+                key.len(),
+                bytes.as_ptr(),
+                bytes.len()
+            );
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(StateError::StorageFailed)
             }
-            Ok(None) => Ok(None),
-            Err(e) => Err(StateError::State(e.to_string())),
         }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::host::HostState;
-
-    #[derive(borsh::BorshSerialize, borsh::BorshDeserialize)]
-    struct TestState {
-        value: String,
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    impl StateKey for TestState {
-        fn get_key() -> Vec<u8> {
-            b"test_state".to_vec()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_state_operations() {
-        let mut context = Context::new(
-            WasmlAddress::new(vec![1, 2, 3]),
-            0,
-            0,
-            Arc::new(RwLock::new(Host::new(Arc::new(RwLock::new(HostState::default()))))),
-            None,
-        );
-        let test_state = TestState {
-            value: "test".to_string(),
-        };
-
-        // Test store_state
-        context.store_state(&test_state).await.unwrap();
-
-        // Test get_state
-        let retrieved: Option<TestState> = context.get_state::<TestState>().await.unwrap();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().value, "test");
-
-        // Test delete_state
-        let deleted: Option<TestState> = context.delete_state::<TestState>().await.unwrap();
-        assert!(deleted.is_some());
-        assert_eq!(deleted.unwrap().value, "test");
-
-        // Verify state is deleted
-        let retrieved: Option<TestState> = context.get_state::<TestState>().await.unwrap();
-        assert!(retrieved.is_none());
+#[cfg(target_arch = "wasm32")]
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
     }
 }

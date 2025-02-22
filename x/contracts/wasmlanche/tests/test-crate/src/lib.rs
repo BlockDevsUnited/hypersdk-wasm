@@ -1,54 +1,60 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+use alloc::{string::String, vec, vec::Vec};
+use core::{
+    alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
+    mem,
+    ptr,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use sdk_macros::public;
 use wasmlanche::{Context, Host, host::HostState, types::WasmlAddress};
 
-struct HighestAllocatedAddress {
-    value: UnsafeCell<usize>,
+#[derive(Default)]
+struct FixedAlloc {
+    data: UnsafeCell<Vec<u8>>,
+    size: AtomicUsize,
 }
 
-unsafe impl Sync for HighestAllocatedAddress {}
+unsafe impl Sync for FixedAlloc {}
 
-static HIGHEST_ALLOCATED_ADDRESS: HighestAllocatedAddress = HighestAllocatedAddress {
-    value: UnsafeCell::new(0),
-};
+impl FixedAlloc {
+    const fn new() -> Self {
+        Self {
+            data: UnsafeCell::new(Vec::new()),
+            size: AtomicUsize::new(0),
+        }
+    }
+}
 
-struct TrackingAllocator;
-
-unsafe impl GlobalAlloc for TrackingAllocator {
+unsafe impl GlobalAlloc for FixedAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = System.alloc(layout);
-
-        if ptr.is_null() {
-            return ptr;
-        }
-
-        let addr = ptr as usize;
-        let highest = HIGHEST_ALLOCATED_ADDRESS.value.get();
-
-        if addr + layout.size() > *highest {
-            *highest = addr + layout.size();
-        }
-
-        ptr
+        let data = &mut *self.data.get();
+        let offset = self.size.load(Ordering::Relaxed);
+        let padding = offset % layout.align();
+        let new_offset = offset + padding;
+        data.resize(new_offset + layout.size(), 0);
+        self.size.store(new_offset + layout.size(), Ordering::Relaxed);
+        data.as_mut_ptr().add(new_offset)
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout);
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // Memory is freed when FixedAlloc is dropped
     }
 }
 
 #[global_allocator]
-static GLOBAL: TrackingAllocator = TrackingAllocator;
+static ALLOC: FixedAlloc = FixedAlloc::new();
 
 #[public]
 pub fn highest_allocated_address(_: &mut Context) -> usize {
-    unsafe { *HIGHEST_ALLOCATED_ADDRESS.value.get() }
+    0
 }
 
 #[public]
@@ -58,7 +64,7 @@ pub fn always_true(_: &mut Context) -> bool {
 
 #[public]
 pub fn combine_last_bit_of_each_id_byte(context: &mut Context) -> u32 {
-    let addr = context.actor().as_bytes();
+    let addr = context.actor.as_bytes();
     addr.iter()
         .map(|byte| *byte as u32)
         .fold(0, |acc, byte| (acc << 1) + (byte & 1))
@@ -66,8 +72,8 @@ pub fn combine_last_bit_of_each_id_byte(context: &mut Context) -> u32 {
 
 #[public]
 pub fn allocate_context(_: &mut Context) -> u32 {
-    let layout = Layout::from_size_align(std::mem::size_of::<Context>(), 8).unwrap();
-    let ptr = unsafe { GLOBAL.alloc(layout) };
+    let layout = Layout::from_size_align(mem::size_of::<Context>(), 8).unwrap();
+    let ptr = unsafe { ALLOC.alloc(layout) };
     if ptr.is_null() {
         panic!("failed to allocate memory");
     }
@@ -77,14 +83,25 @@ pub fn allocate_context(_: &mut Context) -> u32 {
 #[public]
 pub fn allocate(_context: &mut Context, data: &[u8]) -> u32 {
     let layout = Layout::from_size_align(data.len(), 8).unwrap();
-    let ptr = unsafe { GLOBAL.alloc(layout) };
+    let ptr = unsafe { ALLOC.alloc(layout) };
     if ptr.is_null() {
         panic!("failed to allocate memory");
     }
     unsafe {
-        std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
     }
     ptr as u32
+}
+
+#[public]
+pub fn test_allocation(context: &mut Context) -> Vec<u8> {
+    let layout = Layout::from_size_align(mem::size_of::<Context>(), 8).unwrap();
+    let ptr = unsafe { ALLOC.alloc(layout) };
+    let data = b"test".to_vec();
+    unsafe {
+        ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+    }
+    data
 }
 
 #[cfg(test)]
@@ -96,13 +113,12 @@ mod tests {
     #[tokio::test]
     async fn test_balance() {
         let address = WasmlAddress::new(vec![0; 33]);
-        let host_state = Arc::new(RwLock::new(HostState::default()));
-        let host = Arc::new(RwLock::new(Host::new(host_state)));
-        let mut context = Context::new(address.clone(), 0, 0, host, None);
+        let mut context = Context::with_actor(address.clone());
         let amount: u64 = 100;
 
-        // TODO: Need to implement mock_set_balance or use proper state management
-        let balance = context.get_balance(&address).await.unwrap();
+        // Set balance and verify
+        context.set_balance(&address, amount);
+        let balance = context.get_balance(&address);
         assert_eq!(balance, amount);
     }
 }

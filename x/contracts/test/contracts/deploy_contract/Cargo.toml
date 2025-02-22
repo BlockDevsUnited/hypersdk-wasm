@@ -4,11 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["lib"]
+
+[features]
+bindings = ["wasmlanche/bindings"]
+test = ["wasmlanche/test"]
 
 [dependencies]
-wasmlanche = { workspace = true }
-sdk-macros = { path = "../../../sdk-macros" }
+wasmlanche = { workspace = true, features = ["debug"] }
+
+[dev-dependencies]
+wasmlanche = { workspace = true, features = ["debug", "test"] }
 
 [build-dependencies]
-wasmlanche = { workspace = true, features = ["build"] }
+wasmlanche-build = { path = "../../../wasmlanche-build" }

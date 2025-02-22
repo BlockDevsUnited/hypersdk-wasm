@@ -1,9 +1,9 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::io;
-use borsh::maybestd::io as borsh_io;
-use std::fmt;
+use core::fmt;
+use core::error;
+use borsh::maybestd::io;
 
 #[derive(Debug)]
 pub enum Error {
@@ -42,11 +42,9 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            _ => None,
-        }
+impl error::Error for Error {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        None
     }
 }
 

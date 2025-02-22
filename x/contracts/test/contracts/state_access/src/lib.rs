@@ -11,7 +11,7 @@ struct State {
 }
 
 impl StateKey for State {
-    fn get_key() -> Vec<u8> {
+    fn key(&self) -> Vec<u8> {
         b"state".to_vec()
     }
 }

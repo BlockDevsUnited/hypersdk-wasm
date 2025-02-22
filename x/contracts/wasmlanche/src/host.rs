@@ -1,196 +1,160 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use borsh::{BorshDeserialize, BorshSerialize};
-use sha2::{Sha256, Digest};
-use sha3::Keccak256;
-use ed25519_dalek::{PublicKey, Signature, Verifier};
-use async_trait::async_trait;
-use std::{
-    future::Future,
-    pin::Pin,
-};
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
+
+#[cfg(feature = "std")]
+use std::collections::BTreeMap;
+
+use core::future::Future;
+use core::pin::Pin;
+use spin::RwLock;
 
 use crate::{
     error::Error,
     events::{Event, EventLog},
     gas::GasCounter,
     simulator::Simulator,
-    state::StateAccess,
     types::WasmlAddress,
 };
 
-#[derive(Debug, Default)]
+/// Host state for a contract
+#[derive(Default)]
 pub struct HostState {
-    pub event_log: EventLog,
+    pub(crate) balances: BTreeMap<Vec<u8>, u64>,
+    pub(crate) storage: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub(crate) event_log: EventLog,
     pub gas_counter: GasCounter,
-    balances: std::collections::HashMap<Vec<u8>, u64>,
 }
 
-pub trait SimulatorWithDebug: Simulator + std::fmt::Debug {}
-impl<T: Simulator + std::fmt::Debug> SimulatorWithDebug for T {}
+impl HostState {
+    pub fn store(&mut self, key: &[u8], value: Vec<u8>) {
+        self.storage.insert(key.to_vec(), value);
+    }
 
-#[derive(Debug)]
-pub struct Host {
-    state: Arc<RwLock<HostState>>,
+    pub fn get(&self, key: &[u8]) -> Option<&Vec<u8>> {
+        self.storage.get(key)
+    }
+
+    pub fn get_events(&self) -> Vec<Event> {
+        self.event_log.events().iter().cloned().collect()
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> Option<Vec<u8>> {
+        self.storage.remove(key)
+    }
 }
 
-impl Host {
-    pub fn new(state: Arc<RwLock<HostState>>) -> Self {
-        Self { state }
-    }
+/// Interface for host functionality
+pub trait Host: Send + Sync {
+    fn store_state(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error>;
+    fn get_state(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error>;
+    fn delete_state(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error>;
+    fn get_events(&self) -> Vec<Event>;
+    fn add_event(&mut self, event: Event) -> Result<(), Error>;
+    fn charge_gas(&mut self, amount: u64) -> Result<(), Error>;
+    fn remaining_gas(&self) -> u64;
+    fn get_balance(&self, account: &WasmlAddress) -> u64;
+    fn set_balance(&mut self, account: &WasmlAddress, amount: u64);
+    fn emit_event(&mut self, event: Event) -> Result<(), Error>;
+}
 
-    pub async fn add_event(&mut self, event: Event) -> Result<(), Error> {
-        let mut state = self.state.write().await;
-        state.event_log.add_event(event)
-    }
+/// Default implementation of Host
+pub struct HostImpl {
+    state: RwLock<HostState>,
+}
 
-    pub async fn charge_gas(&mut self, amount: u64) -> Result<(), Error> {
-        let mut state = self.state.write().await;
-        state.gas_counter.charge_gas(amount)?;
+impl HostImpl {
+    pub fn new(_actor: WasmlAddress) -> Self {
+        Self {
+            state: RwLock::new(HostState::default()),
+        }
+    }
+}
+
+impl Host for HostImpl {
+    fn store_state(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let mut state = self.state.write();
+        state.store(key, value.to_vec());
         Ok(())
     }
 
-    pub async fn get_state(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let state = self.state.read().await;
-        Ok(state.event_log.get_state(key).cloned())
+    fn get_state(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let state = self.state.read();
+        Ok(state.get(key).map(|v| v.clone()))
     }
 
-    pub async fn store_state(&mut self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let mut state = self.state.write().await;
-        state.event_log.store_state(key, value).map_err(|_| Error::Event("Failed to store state"))
+    fn delete_state(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let mut state = self.state.write();
+        Ok(state.delete(key))
     }
 
-    pub async fn delete_state(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let mut state = self.state.write().await;
-        state.event_log.delete_state(key).map_err(|_| Error::Event("Failed to delete state"))
+    fn get_events(&self) -> Vec<Event> {
+        let state = self.state.read();
+        state.get_events()
     }
 
-    pub async fn execute(
-        &mut self,
-        _actor: &WasmlAddress,
-        _target: &[u8],
-        _method: &str,
-        _args: &[u8],
-        gas: u64,
-    ) -> Result<Vec<u8>, Error> {
-        self.charge_gas(gas).await?;
-        Ok(Vec::new())
+    fn add_event(&mut self, event: Event) -> Result<(), Error> {
+        let mut state = self.state.write();
+        state.event_log.add_event(event)
     }
 
-    pub async fn get_events(&self) -> Result<Vec<Event>, Error> {
-        let state = self.state.read().await;
-        Ok(state.event_log.events().iter().cloned().collect())
+    fn charge_gas(&mut self, amount: u64) -> Result<(), Error> {
+        let mut state = self.state.write();
+        state.gas_counter.charge_gas(amount)
     }
 
-    pub fn get_events_blocking(&self) -> Vec<Event> {
-        let state = self.state.blocking_read();
-        state.event_log.events().iter().cloned().collect()
+    fn remaining_gas(&self) -> u64 {
+        let state = self.state.read();
+        state.gas_counter.gas_remaining()
     }
 
-    pub fn get_contract_events(&self) -> Vec<Event> {
-        let state = self.state.blocking_read();
-        state.event_log.events().iter().cloned().collect()
+    fn get_balance(&self, account: &WasmlAddress) -> u64 {
+        let state = self.state.read();
+        state.balances.get(&account.as_bytes().to_vec()).copied().unwrap_or(0)
     }
 
-    pub fn get_all_events(&self) -> Vec<Event> {
-        futures::executor::block_on(async {
-            let state = self.state.read().await;
-            state.event_log.events().iter().cloned().collect()
-        })
+    fn set_balance(&mut self, account: &WasmlAddress, amount: u64) {
+        let mut state = self.state.write();
+        state.balances.insert(account.as_bytes().to_vec(), amount);
     }
 
-    pub fn get_events_for_contract(&self) -> Vec<Event> {
-        futures::executor::block_on(async {
-            let state = self.state.read().await;
-            state.event_log.events().iter().cloned().collect::<Vec<_>>()
-        })
-    }
-
-    pub fn get_events_for_contract_blocking(&self) -> Vec<Event> {
-        futures::executor::block_on(async {
-            let state = self.state.read().await;
-            state.event_log.events().iter().cloned().collect::<Vec<_>>()
-        })
-    }
-
-    pub fn get_events_for_contract_async(&self) -> Vec<Event> {
-        futures::executor::block_on(async {
-            let state = self.state.read().await;
-            state.event_log.events().iter().cloned().collect::<Vec<_>>()
-        })
-    }
-
-    pub fn remaining_gas(&self) -> Option<u64> {
-        futures::executor::block_on(async {
-            let state = self.state.read().await;
-            Some(state.gas_counter.gas_remaining())
-        })
-    }
-
-    pub fn sha256(&self, data: &[u8]) -> Result<[u8; 32], Error> {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        Ok(hasher.finalize().into())
-    }
-
-    pub fn keccak256(&self, data: &[u8]) -> Result<[u8; 32], Error> {
-        let mut hasher = Keccak256::new();
-        hasher.update(data);
-        Ok(hasher.finalize().into())
-    }
-
-    pub fn ed25519_verify(
-        &self,
-        pubkey: &[u8],
-        msg: &[u8],
-        sig: &[u8],
-    ) -> Result<bool, Error> {
-        let public_key = PublicKey::from_bytes(pubkey)
-            .map_err(|_| Error::Crypto("Invalid public key format"))?;
-        let signature = Signature::from_bytes(sig)
-            .map_err(|_| Error::Crypto("Invalid signature format"))?;
-        Ok(public_key.verify(msg, &signature).is_ok())
-    }
-
-    pub async fn verify_signature(&self, msg: &[u8], sig: &[u8], pk: &[u8]) -> Result<bool, Error> {
-        let public_key = PublicKey::from_bytes(pk)
-            .map_err(|_| Error::Crypto("Invalid public key format"))?;
-        let signature = Signature::from_bytes(sig)
-            .map_err(|_| Error::Crypto("Invalid signature format"))?;
-        Ok(public_key.verify(msg, &signature).is_ok())
+    fn emit_event(&mut self, event: Event) -> Result<(), Error> {
+        self.add_event(event)
     }
 }
 
-#[async_trait]
-impl Simulator for Host {
+#[async_trait::async_trait]
+impl Simulator for HostImpl {
     fn get_balance<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
         Box::pin(async move {
-            let state = self.state.read().await;
-            state.balances.get(&account.as_bytes().to_vec()).copied().unwrap_or(0)
+            Host::get_balance(self, account)
         })
     }
 
     fn set_balance<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            let mut state = self.state.write().await;
-            state.balances.insert(account.as_bytes().to_vec(), balance);
+            Host::set_balance(self, account, balance)
         })
     }
 
     fn remaining_fuel(&self) -> u64 {
-        self.remaining_gas().unwrap_or(0)
+        Host::remaining_gas(self)
     }
 
     fn get_events(&self) -> Vec<Event> {
-        self.state.blocking_read().event_log.events().iter().cloned().collect()
+        Host::get_events(self)
     }
 
     fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            if let Err(e) = self.store_state(key, value).await {
+            if let Err(e) = Host::store_state(self, key, value) {
                 panic!("Error storing state: {}", e);
             }
         })
@@ -198,38 +162,35 @@ impl Simulator for Host {
 
     fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            match self.get_state(key).await {
+            match Host::get_state(self, key) {
                 Ok(val) => val,
-                Err(e) => {
-                    panic!("Error getting state: {}", e);
-                }
+                Err(e) => panic!("Error getting state: {}", e),
             }
         })
     }
 
     fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            match self.delete_state(key).await {
+            match Host::delete_state(self, key) {
                 Ok(val) => val,
-                Err(e) => {
-                    panic!("Error deleting state: {}", e);
-                }
+                Err(e) => panic!("Error deleting state: {}", e),
             }
         })
     }
 
     fn execute<'a>(
         &'a mut self,
-        actor: &'a WasmlAddress,
-        target: &'a [u8],
-        method: &'a str,
-        args: &'a [u8],
+        _actor: &'a WasmlAddress,
+        _target: &'a [u8],
+        _method: &'a str,
+        _args: &'a [u8],
         gas: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
         Box::pin(async move {
-            self.execute(actor, target, method, args, gas)
-                .await
-                .map_err(|e| e.to_string())
+            if let Err(e) = self.charge_gas(gas) {
+                return Err(e.to_string());
+            }
+            Ok(Vec::new())
         })
     }
 }
@@ -237,54 +198,43 @@ impl Simulator for Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
 
-    #[tokio::test]
-    async fn test_host_state() {
-        let state = Arc::new(RwLock::new(HostState::default()));
-        let mut host = Host::new(state);
+    #[test]
+    fn test_state() {
+        let mut host = HostImpl::new(WasmlAddress::new([1; 32]));
 
-        // Test store_state
-        host.store_state(b"key", b"value").await.unwrap();
+        Host::store_state(&mut host, b"key", b"value").unwrap();
 
-        // Test get_state
-        let value = host.get_state(b"key").await.unwrap();
+        let value = Host::get_state(&host, b"key").unwrap();
         assert_eq!(value, Some(b"value".to_vec()));
 
-        // Test delete_state
-        let deleted = host.delete_state(b"key").await.unwrap();
+        let deleted = Host::delete_state(&mut host, b"key").unwrap();
         assert_eq!(deleted, Some(b"value".to_vec()));
 
-        // Verify state is deleted
-        let value = host.get_state(b"key").await.unwrap();
+        let value = Host::get_state(&host, b"key").unwrap();
         assert_eq!(value, None);
     }
 
-    #[tokio::test]
-    async fn test_gas_charging() {
-        let state = Arc::new(RwLock::new(HostState::default()));
-        let mut host = Host::new(state);
+    #[test]
+    fn test_balance() {
+        let mut host = HostImpl::new(WasmlAddress::new([1; 32]));
+        let account = WasmlAddress::new([2; 32]);
 
-        // Test charging gas
-        host.charge_gas(100).await.unwrap();
-        assert_eq!(host.remaining_gas(), Some(999900));
+        assert_eq!(Host::get_balance(&host, &account), 0);
 
-        // Test charging more than remaining
-        assert!(host.charge_gas(1000000).await.is_err());
+        Host::set_balance(&mut host, &account, 100);
+        assert_eq!(Host::get_balance(&host, &account), 100);
     }
 
-    #[tokio::test]
-    async fn test_balance_operations() {
-        let state = Arc::new(RwLock::new(HostState::default()));
-        let mut host = Host::new(state);
-        let account = WasmlAddress::new(vec![1, 2, 3]);
+    #[test]
+    fn test_gas_charging() {
+        let mut host = HostImpl::new(WasmlAddress::new([1; 32]));
 
-        // Test initial balance
-        assert_eq!(host.get_balance(&account).await, 0);
+        // Test charging gas
+        host.charge_gas(100).unwrap();
+        assert_eq!(host.remaining_gas(), 999900);
 
-        // Test setting balance
-        host.set_balance(&account, 100).await;
-        assert_eq!(host.get_balance(&account).await, 100);
+        // Test charging more than remaining
+        assert!(host.charge_gas(1000000).is_err());
     }
 }

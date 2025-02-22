@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["lib"]
 
+[features]
+bindings = ["wasmlanche/bindings"]
+test = ["wasmlanche/test"]
+
 [dependencies]
 wasmlanche = { workspace = true, features = ["debug"] }
 
@@ -13,7 +17,4 @@ wasmlanche = { workspace = true, features = ["debug"] }
 wasmlanche = { workspace = true, features = ["debug", "test"] }
 
 [build-dependencies]
-wasmlanche = { workspace = true, features = ["build"] }
-
-[features]
-bindings = ["wasmlanche/bindings"]
+wasmlanche-build = { path = "../../wasmlanche-build" }

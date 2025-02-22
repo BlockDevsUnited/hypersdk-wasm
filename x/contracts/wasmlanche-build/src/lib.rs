@@ -1,19 +1,29 @@
+pub fn add(left: u64, right: u64) -> u64 {
+    left + right
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_works() {
+        let result = add(2, 2);
+        assert_eq!(result, 4);
+    }
+}
+
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-#[cfg(feature = "build")]
 use std::env;
-#[cfg(feature = "build")]
 use std::path::Path;
-#[cfg(feature = "build")]
 use std::process::Command;
 
 pub const BUILD_DIR_NAME: &str = "target";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RELEASE_PROFILE: &str = "release";
 
-#[cfg(feature = "build")]
-#[allow(clippy::module_name_repetitions)]
 /// Put this in your build.rs file. It currently relies on `/build` directory to be in your crate root.
 /// # Panics
 /// Will panic when attempting to build the wasm file fails.
@@ -120,9 +130,4 @@ pub fn build_wasm() {
             r#"cargo:warning=If the simulator fails to find the "{package_name}" contract, try running `cargo clean -p {package_name}` followed by `cargo test` again."#
         );
     }
-}
-
-#[cfg(feature = "build")]
-fn main() {
-    build_wasm();
 }

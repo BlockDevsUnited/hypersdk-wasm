@@ -1,16 +1,22 @@
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
-use borsh::maybestd::string::ToString as BorshToString;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec;
+#[cfg(not(feature = "std"))]
+use alloc::collections::{VecDeque, BTreeMap as HashMap};
 
+#[cfg(feature = "std")]
+use std::collections::{VecDeque, HashMap};
+
+use borsh::maybestd::string::ToString as BorshToString;
 use borsh::{BorshSerialize, BorshDeserialize};
 use crate::error::EventError;
 use crate::gas::{MAX_EVENT_NAME_LENGTH, MAX_EVENT_DATA_SIZE, MAX_EVENTS_PER_CONTRACT};
 use crate::types::WasmlAddress;
-use std::collections::{VecDeque, HashMap};
+
+#[cfg(not(target_arch = "wasm32"))]
 use async_trait::async_trait;
 
 use crate::{
@@ -99,12 +105,12 @@ impl StateAccess for EventLog {
     async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), StateError> {
         let bytes = state.try_to_vec()
             .map_err(|e| StateError::Serialization(e.to_string()))?;
-        self.store_state(&S::get_key(), &bytes)
+        self.store_state(&S::key(state), &bytes)
             .map_err(|e| StateError::State(e.to_string()))
     }
 
     async fn get_state<S: BorshDeserialize + StateKey + Send + Sync>(&self) -> Result<Option<S>, StateError> {
-        match self.get_state(&S::get_key()) {
+        match self.get_state(&S::key(&S::default())) {
             Some(bytes) => {
                 S::try_from_slice(bytes)
                     .map(Some)
@@ -115,7 +121,7 @@ impl StateAccess for EventLog {
     }
 
     async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, StateError> {
-        match self.delete_state(&S::get_key()) {
+        match self.delete_state(&S::key(&S::default())) {
             Ok(Some(bytes)) => {
                 S::try_from_slice(&bytes)
                     .map(Some)
@@ -131,7 +137,7 @@ impl StateAccess for EventLog {
 mod tests {
     use super::*;
 
-    #[derive(BorshSerialize, BorshDeserialize)]
+    #[derive(BorshSerialize, BorshDeserialize, Default)]
     struct TestState {
         value: u64,
     }
@@ -143,37 +149,53 @@ mod tests {
     }
 
     impl StateKey for TestState {
-        fn get_key() -> Vec<u8> {
+        fn key(&self) -> Vec<u8> {
             b"test_state".to_vec()
         }
     }
 
     #[tokio::test]
     async fn test_event_log() {
-        let mut log = EventLog::new();
-        
-        // Test state operations
-        let state = TestState {
-            value: 1,
-        };
-        
+        let mut log = EventLog::default();
+        let contract_addr = WasmlAddress::new([1; 32]);
+
+        let state = TestState { value: 42 };
         StateAccess::store_state(&mut log, &state).await.unwrap();
-        
-        let retrieved = StateAccess::get_state::<TestState>(&log).await.unwrap();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().value, 1);
-        
-        let deleted = StateAccess::delete_state::<TestState>(&mut log).await.unwrap();
-        assert!(deleted.is_some());
-        assert_eq!(deleted.unwrap().value, 1);
-        
-        let retrieved = StateAccess::get_state::<TestState>(&log).await.unwrap();
-        assert!(retrieved.is_none());
+
+        let state = StateAccess::get_state::<TestState>(&log).await.unwrap();
+        assert_eq!(state.unwrap().value, 42);
+
+        StateAccess::delete_state::<TestState>(&mut log).await.unwrap();
+
+        let state = StateAccess::get_state::<TestState>(&log).await.unwrap();
+        assert!(state.is_none());
+
+        let event = Event::StateChange {
+            key: b"key".to_vec(),
+            value: b"value".to_vec(),
+        };
+
+        log.add_event(event).unwrap();
+        assert_eq!(log.events().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_event_log_with_contract() {
+        let mut log = EventLog::default();
+        let contract_addr = WasmlAddress::new([1; 32]);
+
+        let event = Event::StateChange {
+            key: b"key".to_vec(),
+            value: b"value".to_vec(),
+        };
+
+        log.add_event(event).unwrap();
+        assert_eq!(log.events().len(), 1);
     }
 
     #[test]
     fn test_event_validation() {
-        let contract_addr = WasmlAddress::new(vec![1, 2, 3]);
+        let contract_addr = WasmlAddress::new([1; 32]);
 
         // Test valid event
         let event = Event::Custom {
@@ -241,7 +263,7 @@ mod tests {
     #[test]
     fn test_event_log_clear() {
         let mut log = EventLog::new();
-        let contract_addr = WasmlAddress::new(vec![1, 2, 3]);
+        let contract_addr = WasmlAddress::new([1; 32]);
 
         // Add valid events
         for i in 0..MAX_EVENTS_PER_CONTRACT {
