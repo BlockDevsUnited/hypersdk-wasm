@@ -13,7 +13,7 @@ type LenMap = HashMap<*const u8, usize>;
 /// Get size of allocation at `key`
 #[inline]
 pub fn get(key: *const u8) -> Option<usize> {
-    ALLOCATIONS.with_borrow(|map| map.get(&key).copied())
+    ALLOCATIONS.with_borrow(|map| map.get(&key).cloned())
 }
 
 /// Insert size of allocation at `key`
