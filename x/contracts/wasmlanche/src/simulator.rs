@@ -439,6 +439,10 @@ impl Simulator for SimulatorImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::future::BoxFuture;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use futures::future::join_all;
 
     #[tokio::test]
     async fn test_simulator() {
@@ -476,5 +480,349 @@ mod tests {
         
         // Test remaining fuel
         assert_eq!(simulator.remaining_fuel(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_execution() {
+        let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+        
+        // Setup multiple actors with initial balances
+        let actor1 = WasmlAddress::new([0u8; 32]);
+        let actor2 = WasmlAddress::new([1u8; 32]);
+        
+        {
+            let mut sim = simulator.write().await;
+            sim.set_balance(&actor1, 1000).await;
+            sim.set_balance(&actor2, 1000).await;
+        }
+
+        // Create multiple state operations to run in parallel
+        let sim1 = simulator.clone();
+        let sim2 = simulator.clone();
+        let sim3 = simulator.clone();
+        let sim4 = simulator.clone();
+        let sim5 = simulator.clone();
+        let sim6 = simulator.clone();
+
+        // Create futures for each operation
+        let store_key1 = async move {
+            let mut sim = sim1.write().await;
+            sim.store_state(b"key1", b"value1").await
+        };
+        
+        let set_balance1 = async move {
+            let mut sim = sim2.write().await;
+            sim.set_balance(&actor1, 500).await
+        };
+        
+        let execute1 = async move {
+            let mut sim = sim3.write().await;
+            sim.execute(&actor1, &[], "always_true", &[1], 1_000_000).await
+        };
+        
+        let store_key2 = async move {
+            let mut sim = sim4.write().await;
+            sim.store_state(b"key2", b"value2").await
+        };
+        
+        let set_balance2 = async move {
+            let mut sim = sim5.write().await;
+            sim.set_balance(&actor2, 750).await
+        };
+        
+        let execute2 = async move {
+            let mut sim = sim6.write().await;
+            sim.execute(&actor2, &[], "always_true", &[1], 1_000_000).await
+        };
+
+        // Run all operations in parallel
+        let (_store1, _bal1, exec1, _store2, _bal2, exec2) = 
+            futures::join!(store_key1, set_balance1, execute1, store_key2, set_balance2, execute2);
+
+        // Verify results are Ok
+        assert!(exec1.is_ok());
+        assert!(exec2.is_ok());
+
+        // Verify final state
+        let sim = simulator.read().await;
+        assert_eq!(sim.get_balance(&actor1).await, 500);
+        assert_eq!(sim.get_balance(&actor2).await, 750);
+        assert_eq!(sim.get_state(b"key1").await, Some(b"value1".to_vec()));
+        assert_eq!(sim.get_state(b"key2").await, Some(b"value2".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_parallel_reads() {
+        let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+        let actor = WasmlAddress::new([0u8; 32]);
+        
+        // Setup initial state
+        {
+            let mut sim = simulator.write().await;
+            sim.set_balance(&actor, 1000).await;
+            sim.store_state(b"key1", b"initial").await;
+            sim.store_state(b"key2", b"initial").await;
+        }
+
+        // Create multiple concurrent read operations
+        let sim1 = simulator.clone();
+        let sim2 = simulator.clone();
+        let sim3 = simulator.clone();
+
+        let read_balance = async move {
+            let sim = sim1.read().await;
+            sim.get_balance(&actor).await
+        };
+
+        let read_key1 = async move {
+            let sim = sim2.read().await;
+            sim.get_state(b"key1").await
+        };
+
+        let read_key2 = async move {
+            let sim = sim3.read().await;
+            sim.get_state(b"key2").await
+        };
+
+        // Run all reads in parallel
+        let (balance, key1, key2) = futures::join!(read_balance, read_key1, read_key2);
+
+        // Verify results
+        assert_eq!(balance, 1000);
+        assert_eq!(key1, Some(b"initial".to_vec()));
+        assert_eq!(key2, Some(b"initial".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_state_conflicts() {
+        let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+        let actor = WasmlAddress::new([0u8; 32]);
+        
+        // Setup initial state
+        {
+            let mut sim = simulator.write().await;
+            sim.set_balance(&actor, 500).await;
+        }
+
+        // Create conflicting operations on the same key
+        let sim1 = simulator.clone();
+        let sim2 = simulator.clone();
+        let sim3 = simulator.clone();
+
+        let write_key = async move {
+            let mut sim = sim1.write().await;
+            sim.store_state(b"conflict_key", b"value1").await
+        };
+
+        let write_same_key = async move {
+            let mut sim = sim2.write().await;
+            sim.store_state(b"conflict_key", b"value2").await
+        };
+
+        let read_key = async move {
+            let sim = sim3.read().await;
+            sim.get_state(b"conflict_key").await
+        };
+
+        // Run operations in parallel
+        let (_, _, final_value) = futures::join!(write_key, write_same_key, read_key);
+
+        // Verify that we got one of the valid values
+        assert!(final_value == Some(b"value1".to_vec()) || final_value == Some(b"value2".to_vec()) || final_value == None);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_read_write_operations() {
+        let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+        let actor1 = WasmlAddress::new([0u8; 32]);
+        let actor2 = WasmlAddress::new([1u8; 32]);
+        
+        // Setup initial state
+        {
+            let mut sim = simulator.write().await;
+            sim.set_balance(&actor1, 1000).await;
+            sim.set_balance(&actor2, 2000).await;
+            sim.store_state(b"key1", b"initial").await;
+            sim.store_state(b"key2", b"initial").await;
+        }
+
+        // Mix of read and write operations
+        let sim1 = simulator.clone();
+        let sim2 = simulator.clone();
+        let sim3 = simulator.clone();
+        let sim4 = simulator.clone();
+
+        let read_balance1 = async move {
+            let sim = sim1.read().await;
+            sim.get_balance(&actor1).await
+        };
+
+        let write_state = async move {
+            let mut sim = sim2.write().await;
+            sim.store_state(b"key1", b"modified").await
+        };
+
+        let read_state = async move {
+            let sim = sim3.read().await;
+            sim.get_state(b"key1").await
+        };
+
+        let transfer_balance = async move {
+            let mut sim = sim4.write().await;
+            sim.set_balance(&actor2, 2500).await
+        };
+
+        // Run mixed operations in parallel
+        let (balance1, _, state_value, _) = 
+            futures::join!(read_balance1, write_state, read_state, transfer_balance);
+
+        // Verify results
+        assert_eq!(balance1, 1000); // Initial balance should be unchanged
+        assert!(state_value == Some(b"initial".to_vec()) || state_value == Some(b"modified".to_vec()));
+
+        // Verify final state
+        let sim = simulator.read().await;
+        assert_eq!(sim.get_balance(&actor2).await, 2500);
+        assert_eq!(sim.get_state(b"key1").await, Some(b"modified".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_high_concurrency() {
+        let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+        let num_operations = 100;
+        
+        // Create multiple actors
+        let actors: Vec<_> = (0..num_operations)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[0] = i as u8;
+                WasmlAddress::new(bytes)
+            })
+            .collect();
+        
+        // Setup initial state
+        {
+            let mut sim = simulator.write().await;
+            for actor in &actors {
+                sim.set_balance(actor, 1000).await;
+            }
+        }
+
+        // Create many parallel operations
+        let mut futures = Vec::new();
+        
+        for (i, actor) in actors.iter().enumerate() {
+            let sim = simulator.clone();
+            let actor = actor.clone();
+            
+            // Mix of different operations
+            let future = async move {
+                let mut sim = sim.write().await;
+                match i % 3 {
+                    0 => {
+                        sim.set_balance(&actor, 500).await;
+                        Ok(())
+                    },
+                    1 => {
+                        sim.store_state(format!("key_{}", i).as_bytes(), b"value").await;
+                        Ok(())
+                    },
+                    _ => {
+                        let result = sim.execute(&actor, &[], "always_true", &[1], 1_000_000).await;
+                        match result {
+                            Ok(_) => Ok(()),
+                            Err(e) => Err(e)
+                        }
+                    }
+                }
+            };
+            futures.push(future);
+        }
+
+        // Run all operations in parallel
+        let results: Vec<Result<(), String>> = join_all(futures).await;
+        
+        // Verify all operations completed successfully
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // Verify final state
+        let sim = simulator.read().await;
+        for (i, actor) in actors.iter().enumerate() {
+            match i % 3 {
+                0 => assert_eq!(sim.get_balance(actor).await, 500),
+                1 => assert_eq!(sim.get_state(format!("key_{}", i).as_bytes()).await, Some(b"value".to_vec())),
+                _ => continue,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_parallel_error_conditions() {
+        let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+        let actor = WasmlAddress::new([0u8; 32]);
+        
+        // Setup initial state
+        {
+            let mut sim = simulator.write().await;
+            sim.set_balance(&actor, 500).await;
+        }
+
+        // Create operations that may fail
+        let sim1 = simulator.clone();
+        let sim2 = simulator.clone();
+        let sim3 = simulator.clone();
+        let sim4 = simulator.clone();
+
+        // Operation 1: Try to read non-existent state
+        let op1 = async move {
+            let sim = sim1.read().await;
+            match sim.get_state(b"non_existent_key1").await {
+                Some(_) => Err("Expected None for non-existent key".to_string()),
+                None => Ok(())
+            }
+        };
+
+        // Operation 2: Try to read another non-existent state
+        let op2 = async move {
+            let sim = sim2.read().await;
+            match sim.get_state(b"non_existent_key2").await {
+                Some(_) => Err("Expected None for non-existent key".to_string()),
+                None => Ok(())
+            }
+        };
+
+        // Operation 3: Valid write operation
+        let op3 = async move {
+            let mut sim = sim3.write().await;
+            sim.store_state(b"key", b"value").await;
+            Ok::<_, String>(())
+        };
+
+        // Operation 4: Valid read operation
+        let op4 = async move {
+            let sim = sim4.read().await;
+            let balance = sim.get_balance(&actor).await;
+            Ok::<_, String>(balance)
+        };
+
+        // Run mix of operations in parallel
+        let (r1, r2, r3, r4) = futures::join!(op1, op2, op3, op4);
+        
+        // Verify all operations complete as expected
+        assert!(r1.is_ok());  // Reading non-existent key returns None (success)
+        assert!(r2.is_ok());  // Reading non-existent key returns None (success)
+        assert!(r3.is_ok());  // Write operation succeeds
+        assert!(r4.is_ok());  // Read operation succeeds
+        
+        if let Ok(balance) = r4 {
+            assert_eq!(balance, 500); // Balance should remain unchanged
+        }
+
+        // Verify final state
+        let sim = simulator.read().await;
+        assert_eq!(sim.get_balance(&actor).await, 500);
+        assert_eq!(sim.get_state(b"key").await, Some(b"value".to_vec()));
+        assert_eq!(sim.get_state(b"non_existent_key1").await, None);
+        assert_eq!(sim.get_state(b"non_existent_key2").await, None);
     }
 }
