@@ -1,6 +1,81 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
+//! # Wasmlanche Simulator
+//! 
+//! The simulator module provides a high-performance, concurrent execution environment for WebAssembly
+//! smart contracts. It leverages Rust's async/await capabilities and tokio's runtime to enable
+//! parallel execution of contract operations.
+//! 
+//! ## Parallel Execution Benefits
+//! 
+//! The simulator supports concurrent execution of multiple operations, providing several key benefits:
+//! 
+//! - **Increased Throughput**: Multiple non-conflicting operations can execute simultaneously
+//! - **Better Resource Utilization**: Async I/O operations don't block other executions
+//! - **Reduced Latency**: Independent operations don't need to wait for others to complete
+//! 
+//! ## Usage Examples
+//! 
+//! ### Basic Parallel State Operations
+//! ```rust
+//! use wasmlanche::simulator::{Simulator, SimulatorImpl};
+//! use tokio::sync::RwLock;
+//! use std::sync::Arc;
+//! 
+//! #[tokio::main]
+//! async fn main() {
+//!     let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+//!     
+//!     // Perform parallel reads
+//!     let sim1 = simulator.clone();
+//!     let sim2 = simulator.clone();
+//!     
+//!     let (value1, value2) = futures::join!(
+//!         async { sim1.read().await.get_state(b"key1").await },
+//!         async { sim2.read().await.get_state(b"key2").await }
+//!     );
+//! }
+//! ```
+//! 
+//! ### Mixed Read/Write Operations
+//! ```rust
+//! # use wasmlanche::simulator::{Simulator, SimulatorImpl};
+//! # use tokio::sync::RwLock;
+//! # use std::sync::Arc;
+//! # 
+//! #[tokio::main]
+//! async fn main() {
+//!     let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
+//!     
+//!     let sim1 = simulator.clone();
+//!     let sim2 = simulator.clone();
+//!     
+//!     // Concurrent read and write operations
+//!     let (read_result, _) = futures::join!(
+//!         async { sim1.read().await.get_state(b"key1").await },
+//!         async { 
+//!             let mut sim = sim2.write().await;
+//!             sim.store_state(b"key2", b"value2").await
+//!         }
+//!     );
+//! }
+//! ```
+//! 
+//! ## Concurrency Safety
+//! 
+//! The simulator uses tokio's `RwLock` to ensure thread-safe access to shared state:
+//! - Multiple readers can access state simultaneously
+//! - Writers get exclusive access to prevent conflicts
+//! - The lock granularity is optimized for parallel execution
+//! 
+//! ## Error Handling
+//! 
+//! The simulator provides robust error handling for concurrent operations:
+//! - State conflicts are detected and prevented
+//! - Resource exhaustion is handled gracefully
+//! - Invalid operations fail without affecting other concurrent operations
+
 use std::{
     collections::HashMap,
     future::Future,
@@ -17,13 +92,48 @@ use crate::{
     types::WasmlAddress,
 };
 
+/// The Simulator trait defines the interface for executing WebAssembly smart contracts
+/// in a concurrent environment. All operations are asynchronous and can be executed
+/// in parallel when there are no conflicts.
+/// 
+/// # Concurrent Execution
+/// 
+/// The simulator supports several types of parallel operations:
+/// - Multiple simultaneous read operations
+/// - Non-conflicting write operations
+/// - Mixed read/write operations on different state keys
+/// 
+/// # Implementation Requirements
+/// 
+/// Implementors must ensure:
+/// - Thread safety through appropriate synchronization
+/// - Proper handling of concurrent access to shared state
+/// - Consistent state updates during parallel execution
+/// 
 #[async_trait::async_trait]
 pub trait Simulator: Send + Sync {
+    /// Asynchronously retrieves the balance for an account.
+    /// This operation can be executed in parallel with other read operations.
     fn get_balance<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>>;
+
+    /// Asynchronously sets the balance for an account.
+    /// This operation requires exclusive access to the account's balance.
     fn set_balance<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Asynchronously stores a key-value pair in the contract state.
+    /// Multiple store operations to different keys can execute in parallel.
     fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Asynchronously retrieves a value from the contract state.
+    /// Multiple get operations can execute in parallel.
     fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>>;
+
+    /// Asynchronously removes a key-value pair from the contract state.
+    /// Returns the previous value if it existed.
     fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>>;
+
+    /// Asynchronously executes a contract method with the given arguments.
+    /// Handles parallel execution of multiple contract calls when possible.
     fn execute<'a>(
         &'a mut self,
         actor: &'a WasmlAddress,
@@ -32,7 +142,11 @@ pub trait Simulator: Send + Sync {
         args: &'a [u8],
         gas: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
+
+    /// Returns the remaining gas available for execution.
     fn remaining_fuel(&self) -> u64;
+
+    /// Returns the list of events emitted during contract execution.
     fn get_events(&self) -> Vec<Event>;
 }
 

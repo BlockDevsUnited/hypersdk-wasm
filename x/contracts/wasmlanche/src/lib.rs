@@ -63,12 +63,12 @@ pub const ID_LEN: usize = 32;
 /// use wasmlanche::prelude::*;
 /// 
 /// #[public]
-/// fn init() {
+/// pub fn init(ctx: &mut Context) {
 ///     // Your initialization code here
 /// }
 /// 
 /// #[public]
-/// fn handle() {
+/// pub fn handle(ctx: &mut Context) {
 ///     // Your contract code here
 /// }
 /// ```
