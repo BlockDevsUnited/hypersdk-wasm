@@ -1,8 +1,9 @@
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use wasmlanche::Address;
+use wasmlanche::types::WasmlAddress;
 use wasmlanche_test::{Builder, TestCrate, UserDefinedFn};
+use borsh::{BorshDeserialize, BorshSerialize};
 
 pub struct Contract {
     inner: TestCrate,
@@ -33,7 +34,7 @@ impl Contract {
             .take_result()
             .expect("always_true should always return something");
 
-        borsh::from_slice(&result).expect("failed to deserialize result")
+        bool::deserialize(&mut &result[..]).expect("failed to deserialize result")
     }
 }
 
@@ -52,10 +53,12 @@ impl Nft {
     }
 
     #[inline]
-    pub fn mint(&mut self, address: Address, id: u64) {
+    pub fn mint(&mut self, address: WasmlAddress, id: u64) {
         let Self { mint, inner } = self;
-
-        let params = inner.allocate_params(&(address, id));
+        let mut buf = Vec::new();
+        address.serialize(&mut buf).expect("failed to serialize address");
+        id.serialize(&mut buf).expect("failed to serialize id");
+        let params = inner.allocate(buf);
 
         mint.call(inner.store_mut(), params)
             .expect("failed to call `mint` function");
@@ -66,6 +69,6 @@ impl Nft {
             .take_result()
             .expect("mint should always return something");
 
-        borsh::from_slice(&result).expect("failed to deserialize result")
+        <()>::deserialize(&mut &result[..]).expect("failed to deserialize result")
     }
 }

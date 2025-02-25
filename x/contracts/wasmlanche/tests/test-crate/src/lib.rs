@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
@@ -14,7 +14,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use sdk_macros::public;
-use wasmlanche::{Context, Host, host::HostState, types::WasmlAddress};
+use wasmlanche::Context;
 
 #[derive(Default)]
 struct FixedAlloc {
@@ -94,7 +94,7 @@ pub fn allocate(_context: &mut Context, data: &[u8]) -> u32 {
 }
 
 #[public]
-pub fn test_allocation(context: &mut Context) -> Vec<u8> {
+pub fn test_allocation(_context: &mut Context) -> Vec<u8> {
     let layout = Layout::from_size_align(mem::size_of::<Context>(), 8).unwrap();
     let ptr = unsafe { ALLOC.alloc(layout) };
     let data = b"test".to_vec();
@@ -107,12 +107,11 @@ pub fn test_allocation(context: &mut Context) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::RwLock;
-    use std::sync::Arc;
+    use wasmlanche::types::WasmlAddress;
 
-    #[tokio::test]
-    async fn test_balance() {
-        let address = WasmlAddress::new(vec![0; 33]);
+    #[test]
+    fn test_balance() {
+        let address = WasmlAddress::new([0; 32]);
         let mut context = Context::with_actor(address.clone());
         let amount: u64 = 100;
 
