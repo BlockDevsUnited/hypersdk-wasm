@@ -11,7 +11,7 @@ bindings = ["wasmlanche/bindings"]
 test = ["wasmlanche/test"]
 
 [dependencies]
-wasmlanche = { workspace = true, features = ["debug"] }
+wasmlanche = { workspace = true, default-features = false, features = ["debug"] }
 borsh = { version = "0.10", default-features = false }
 
 [dev-dependencies]

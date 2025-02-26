@@ -20,9 +20,14 @@ use crate::{
     error::Error,
     events::{Event, EventLog},
     gas::GasCounter,
-    simulator::Simulator,
     types::WasmlAddress,
 };
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+use crate::simulator::{Simulator, SimulatorExt};
+
+#[cfg(target_arch = "wasm32")]
+use crate::simulator::Simulator;
 
 /// Host state for a contract
 #[derive(Default)]
@@ -130,18 +135,69 @@ impl Host for HostImpl {
     }
 }
 
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[async_trait::async_trait]
-impl Simulator for HostImpl {
-    fn get_balance<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
+impl SimulatorExt for HostImpl {
+    fn get_balance_async<'a>(&'a self, actor: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
+        Box::pin(async move { Simulator::get_balance(self, actor) })
+    }
+
+    fn set_balance_async<'a>(&'a mut self, actor: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { Simulator::set_balance(self, actor, balance) })
+    }
+
+    fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            Host::get_balance(self, account)
+            Host::store_state(self, key, value).unwrap();
         })
     }
 
-    fn set_balance<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            Host::set_balance(self, account, balance)
+            Host::get_state(self, key).unwrap()
         })
+    }
+
+    fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async move {
+            Host::delete_state(self, key).unwrap()
+        })
+    }
+
+    fn execute<'a>(
+        &'a mut self,
+        actor: &'a WasmlAddress,
+        _target: &'a [u8],
+        _method: &'a str,
+        _args: &'a [u8],
+        gas: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut state = self.state.write();
+            state.gas_counter = GasCounter::new(gas);
+            
+            // For now, just return empty result
+            // TODO: Implement actual WASM execution
+            Ok(vec![])
+        })
+    }
+
+    fn remaining_fuel_async(&self) -> u64 {
+        Simulator::remaining_fuel(self)
+    }
+
+    fn get_events_async(&self) -> Vec<Event> {
+        Simulator::get_events(self)
+    }
+}
+
+impl Simulator for HostImpl {
+    fn get_balance(&self, account: &WasmlAddress) -> u64 {
+        Host::get_balance(self, account)
+    }
+
+    fn set_balance(&mut self, account: &WasmlAddress, balance: u64) {
+        Host::set_balance(self, account, balance)
     }
 
     fn remaining_fuel(&self) -> u64 {
@@ -150,48 +206,6 @@ impl Simulator for HostImpl {
 
     fn get_events(&self) -> Vec<Event> {
         Host::get_events(self)
-    }
-
-    fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            if let Err(e) = Host::store_state(self, key, value) {
-                panic!("Error storing state: {}", e);
-            }
-        })
-    }
-
-    fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async move {
-            match Host::get_state(self, key) {
-                Ok(val) => val,
-                Err(e) => panic!("Error getting state: {}", e),
-            }
-        })
-    }
-
-    fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async move {
-            match Host::delete_state(self, key) {
-                Ok(val) => val,
-                Err(e) => panic!("Error deleting state: {}", e),
-            }
-        })
-    }
-
-    fn execute<'a>(
-        &'a mut self,
-        _actor: &'a WasmlAddress,
-        _target: &'a [u8],
-        _method: &'a str,
-        _args: &'a [u8],
-        gas: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
-        Box::pin(async move {
-            if let Err(e) = self.charge_gas(gas) {
-                return Err(e.to_string());
-            }
-            Ok(Vec::new())
-        })
     }
 }
 

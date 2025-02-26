@@ -19,7 +19,7 @@
 //! 
 //! ### Basic Parallel State Operations
 //! ```rust
-//! use wasmlanche::simulator::{Simulator, SimulatorImpl};
+//! use wasmlanche::simulator::{Simulator, SimulatorImpl, SimulatorExt};
 //! use tokio::sync::RwLock;
 //! use std::sync::Arc;
 //! 
@@ -40,10 +40,10 @@
 //! 
 //! ### Mixed Read/Write Operations
 //! ```rust
-//! # use wasmlanche::simulator::{Simulator, SimulatorImpl};
-//! # use tokio::sync::RwLock;
-//! # use std::sync::Arc;
-//! # 
+//! use wasmlanche::simulator::{Simulator, SimulatorImpl, SimulatorExt};
+//! use tokio::sync::RwLock;
+//! use std::sync::Arc;
+//! 
 //! #[tokio::main]
 //! async fn main() {
 //!     let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
@@ -76,6 +76,7 @@
 //! - Resource exhaustion is handled gracefully
 //! - Invalid operations fail without affecting other concurrent operations
 
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use std::{
     collections::HashMap,
     future::Future,
@@ -83,8 +84,10 @@ use std::{
     sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}},
 };
 
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 use tokio::sync::RwLock;
-use wasmtime::{Engine, Store, Instance, Module, Linker, Config, Caller};
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+use wasmtime::{Engine, Store, Module, Linker, Config, Caller};
 
 use crate::{
     events::{Event, EventLog},
@@ -92,33 +95,23 @@ use crate::{
     types::WasmlAddress,
 };
 
-/// The Simulator trait defines the interface for executing WebAssembly smart contracts
-/// in a concurrent environment. All operations are asynchronous and can be executed
-/// in parallel when there are no conflicts.
-/// 
-/// # Concurrent Execution
-/// 
-/// The simulator supports several types of parallel operations:
-/// - Multiple simultaneous read operations
-/// - Non-conflicting write operations
-/// - Mixed read/write operations on different state keys
-/// 
-/// # Implementation Requirements
-/// 
-/// Implementors must ensure:
-/// - Thread safety through appropriate synchronization
-/// - Proper handling of concurrent access to shared state
-/// - Consistent state updates during parallel execution
-/// 
+pub trait Simulator {
+    fn get_balance(&self, account: &WasmlAddress) -> u64;
+    fn set_balance(&mut self, account: &WasmlAddress, balance: u64);
+    fn remaining_fuel(&self) -> u64;
+    fn get_events(&self) -> Vec<Event>;
+}
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[async_trait::async_trait]
-pub trait Simulator: Send + Sync {
+pub trait SimulatorExt: Simulator + Send + Sync {
     /// Asynchronously retrieves the balance for an account.
     /// This operation can be executed in parallel with other read operations.
-    fn get_balance<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>>;
+    fn get_balance_async<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>>;
 
     /// Asynchronously sets the balance for an account.
     /// This operation requires exclusive access to the account's balance.
-    fn set_balance<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    fn set_balance_async<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
     /// Asynchronously stores a key-value pair in the contract state.
     /// Multiple store operations to different keys can execute in parallel.
@@ -143,13 +136,12 @@ pub trait Simulator: Send + Sync {
         gas: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 
-    /// Returns the remaining gas available for execution.
-    fn remaining_fuel(&self) -> u64;
+    fn remaining_fuel_async(&self) -> u64;
 
-    /// Returns the list of events emitted during contract execution.
-    fn get_events(&self) -> Vec<Event>;
+    fn get_events_async(&self) -> Vec<Event>;
 }
 
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[derive(Default)]
 pub struct SimulatorState {
     pub actor: WasmlAddress,
@@ -166,6 +158,7 @@ pub struct SimulatorState {
     pub highest_addr: Arc<AtomicU64>,  // Track highest allocated address
 }
 
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub struct SimulatorImpl {
     pub balances: Arc<RwLock<HashMap<WasmlAddress, u64>>>,
     pub state: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -176,6 +169,7 @@ pub struct SimulatorImpl {
     pub instance: wasmtime::Instance,
 }
 
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 impl SimulatorImpl {
     pub async fn new() -> Self {
         let balances = Arc::new(RwLock::new(HashMap::new()));
@@ -427,16 +421,36 @@ impl SimulatorImpl {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 impl Simulator for SimulatorImpl {
-    fn get_balance<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
+    fn get_balance(&self, account: &WasmlAddress) -> u64 {
+        self.balances.blocking_read().get(account).copied().unwrap_or(0)
+    }
+
+    fn set_balance(&mut self, account: &WasmlAddress, balance: u64) {
+        self.balances.blocking_write().insert(account.clone(), balance);
+    }
+
+    fn remaining_fuel(&self) -> u64 {
+        self.remaining_gas.blocking_read().clone()
+    }
+
+    fn get_events(&self) -> Vec<Event> {
+        self.event_log.blocking_read().events().iter().cloned().collect()
+    }
+}
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[async_trait::async_trait]
+impl SimulatorExt for SimulatorImpl {
+    fn get_balance_async<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
         let balances = self.balances.clone();
         Box::pin(async move {
             balances.read().await.get(account).copied().unwrap_or(0)
         })
     }
 
-    fn set_balance<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn set_balance_async<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let balances = self.balances.clone();
         Box::pin(async move {
             balances.write().await.insert(account.clone(), balance);
@@ -537,23 +551,43 @@ impl Simulator for SimulatorImpl {
         })
     }
 
-    fn remaining_fuel(&self) -> u64 {
+    fn remaining_fuel_async(&self) -> u64 {
         futures::executor::block_on(async {
             *self.remaining_gas.read().await
         })
     }
 
-    fn get_events(&self) -> Vec<Event> {
+    fn get_events_async(&self) -> Vec<Event> {
         futures::executor::block_on(async {
             self.event_log.read().await.events().iter().cloned().collect()
         })
     }
 }
 
-#[cfg(test)]
+#[cfg(target_arch = "wasm32")]
+pub struct SimulatorImpl;
+
+#[cfg(target_arch = "wasm32")]
+impl Simulator for SimulatorImpl {
+    fn get_balance(&self, _account: &WasmlAddress) -> u64 {
+        0
+    }
+
+    fn set_balance(&mut self, _account: &WasmlAddress, _balance: u64) {
+    }
+
+    fn remaining_fuel(&self) -> u64 {
+        0
+    }
+
+    fn get_events(&self) -> Vec<Event> {
+        Vec::new()
+    }
+}
+
+#[cfg(all(test, feature = "std", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use futures::future::BoxFuture;
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use futures::future::join_all;
@@ -565,27 +599,18 @@ mod tests {
         let balance: u64 = 100;
 
         // Test balance operations
-        let result = simulator.set_balance(&actor, balance).await;
-        assert_eq!(result, ());
-
-        let result = simulator.get_balance(&actor).await;
-        assert_eq!(result, balance);
+        simulator.set_balance_async(&actor, balance).await;
+        assert_eq!(simulator.get_balance_async(&actor).await, balance);
 
         // Test state operations
         let key = b"test_key".to_vec();
         let value = b"test_value".to_vec();
 
-        let result = simulator.store_state(&key, &value).await;
-        assert_eq!(result, ());
+        simulator.store_state(&key, &value).await;
+        assert_eq!(simulator.get_state(&key).await, Some(value.clone()));
 
-        let result = simulator.get_state(&key).await;
-        assert_eq!(result, Some(value.clone()));
-
-        let result = simulator.delete_state(&key).await;
-        assert_eq!(result, Some(value));
-
-        let result = simulator.get_state(&key).await;
-        assert_eq!(result, None);
+        assert_eq!(simulator.delete_state(&key).await, Some(value));
+        assert_eq!(simulator.get_state(&key).await, None);
 
         // Test execute
         let args = vec![1u8; 1]; // Allocate 1 byte to avoid zero allocation
@@ -593,7 +618,7 @@ mod tests {
         assert!(result.is_ok());
         
         // Test remaining fuel
-        assert_eq!(simulator.remaining_fuel(), 0);
+        assert_eq!(simulator.remaining_fuel_async(), 0);
     }
 
     #[tokio::test]
@@ -606,8 +631,8 @@ mod tests {
         
         {
             let mut sim = simulator.write().await;
-            sim.set_balance(&actor1, 1000).await;
-            sim.set_balance(&actor2, 1000).await;
+            sim.set_balance_async(&actor1, 1000).await;
+            sim.set_balance_async(&actor2, 1000).await;
         }
 
         // Create multiple state operations to run in parallel
@@ -626,7 +651,7 @@ mod tests {
         
         let set_balance1 = async move {
             let mut sim = sim2.write().await;
-            sim.set_balance(&actor1, 500).await
+            sim.set_balance_async(&actor1, 500).await
         };
         
         let execute1 = async move {
@@ -641,7 +666,7 @@ mod tests {
         
         let set_balance2 = async move {
             let mut sim = sim5.write().await;
-            sim.set_balance(&actor2, 750).await
+            sim.set_balance_async(&actor2, 750).await
         };
         
         let execute2 = async move {
@@ -659,8 +684,8 @@ mod tests {
 
         // Verify final state
         let sim = simulator.read().await;
-        assert_eq!(sim.get_balance(&actor1).await, 500);
-        assert_eq!(sim.get_balance(&actor2).await, 750);
+        assert_eq!(sim.get_balance_async(&actor1).await, 500);
+        assert_eq!(sim.get_balance_async(&actor2).await, 750);
         assert_eq!(sim.get_state(b"key1").await, Some(b"value1".to_vec()));
         assert_eq!(sim.get_state(b"key2").await, Some(b"value2".to_vec()));
     }
@@ -673,7 +698,7 @@ mod tests {
         // Setup initial state
         {
             let mut sim = simulator.write().await;
-            sim.set_balance(&actor, 1000).await;
+            sim.set_balance_async(&actor, 1000).await;
             sim.store_state(b"key1", b"initial").await;
             sim.store_state(b"key2", b"initial").await;
         }
@@ -685,7 +710,7 @@ mod tests {
 
         let read_balance = async move {
             let sim = sim1.read().await;
-            sim.get_balance(&actor).await
+            sim.get_balance_async(&actor).await
         };
 
         let read_key1 = async move {
@@ -715,7 +740,7 @@ mod tests {
         // Setup initial state
         {
             let mut sim = simulator.write().await;
-            sim.set_balance(&actor, 500).await;
+            sim.set_balance_async(&actor, 500).await;
         }
 
         // Create conflicting operations on the same key
@@ -754,8 +779,8 @@ mod tests {
         // Setup initial state
         {
             let mut sim = simulator.write().await;
-            sim.set_balance(&actor1, 1000).await;
-            sim.set_balance(&actor2, 2000).await;
+            sim.set_balance_async(&actor1, 1000).await;
+            sim.set_balance_async(&actor2, 2000).await;
             sim.store_state(b"key1", b"initial").await;
             sim.store_state(b"key2", b"initial").await;
         }
@@ -768,7 +793,7 @@ mod tests {
 
         let read_balance1 = async move {
             let sim = sim1.read().await;
-            sim.get_balance(&actor1).await
+            sim.get_balance_async(&actor1).await
         };
 
         let write_state = async move {
@@ -783,7 +808,7 @@ mod tests {
 
         let transfer_balance = async move {
             let mut sim = sim4.write().await;
-            sim.set_balance(&actor2, 2500).await
+            sim.set_balance_async(&actor2, 2500).await
         };
 
         // Run mixed operations in parallel
@@ -796,7 +821,7 @@ mod tests {
 
         // Verify final state
         let sim = simulator.read().await;
-        assert_eq!(sim.get_balance(&actor2).await, 2500);
+        assert_eq!(sim.get_balance_async(&actor2).await, 2500);
         assert_eq!(sim.get_state(b"key1").await, Some(b"modified".to_vec()));
     }
 
@@ -818,7 +843,7 @@ mod tests {
         {
             let mut sim = simulator.write().await;
             for actor in &actors {
-                sim.set_balance(actor, 1000).await;
+                sim.set_balance_async(actor, 1000).await;
             }
         }
 
@@ -834,7 +859,7 @@ mod tests {
                 let mut sim = sim.write().await;
                 match i % 3 {
                     0 => {
-                        sim.set_balance(&actor, 500).await;
+                        sim.set_balance_async(&actor, 500).await;
                         Ok(())
                     },
                     1 => {
@@ -863,8 +888,8 @@ mod tests {
         let sim = simulator.read().await;
         for (i, actor) in actors.iter().enumerate() {
             match i % 3 {
-                0 => assert_eq!(sim.get_balance(actor).await, 500),
-                1 => assert_eq!(sim.get_state(format!("key_{}", i).as_bytes()).await, Some(b"value".to_vec())),
+                0 => assert_eq!(sim.get_balance_async(actor).await, 500),
+                1 => assert_eq!(sim.get_state(format!("key_{}", i).as_bytes()).await.unwrap(), b"value"),
                 _ => continue,
             }
         }
@@ -873,12 +898,12 @@ mod tests {
     #[tokio::test]
     async fn test_parallel_error_conditions() {
         let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
-        let actor = WasmlAddress::new([0u8; 32]);
+        let actor = simulator.read().await.store.data().actor.clone();
         
         // Setup initial state
         {
             let mut sim = simulator.write().await;
-            sim.set_balance(&actor, 500).await;
+            sim.set_balance_async(&actor, 500).await;
         }
 
         // Create operations that may fail
@@ -915,7 +940,7 @@ mod tests {
         // Operation 4: Valid read operation
         let op4 = async move {
             let sim = sim4.read().await;
-            let balance = sim.get_balance(&actor).await;
+            let balance = sim.get_balance_async(&actor).await;
             Ok::<_, String>(balance)
         };
 
@@ -934,8 +959,8 @@ mod tests {
 
         // Verify final state
         let sim = simulator.read().await;
-        assert_eq!(sim.get_balance(&actor).await, 500);
-        assert_eq!(sim.get_state(b"key").await, Some(b"value".to_vec()));
+        assert_eq!(sim.get_balance_async(&actor).await, 500);
+        assert_eq!(sim.get_state(b"key").await.unwrap(), b"value");
         assert_eq!(sim.get_state(b"non_existent_key1").await, None);
         assert_eq!(sim.get_state(b"non_existent_key2").await, None);
     }

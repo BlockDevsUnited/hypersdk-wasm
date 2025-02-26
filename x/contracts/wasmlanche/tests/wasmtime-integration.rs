@@ -5,7 +5,7 @@
 
 use tokio::runtime::Runtime;
 use wasmlanche::{
-    simulator::{SimulatorImpl, Simulator},
+    simulator::{SimulatorImpl, SimulatorExt},
 };
 
 const TEST_PKG: &str = "test-crate";

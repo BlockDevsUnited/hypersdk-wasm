@@ -37,10 +37,18 @@ pub use crate::{
     gas::GasCounter,
     host::Host,
     memory::Memory,
-    simulator::Simulator,
     state::StateAccess,
     types::WasmlAddress,
 };
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub use crate::{
+    simulator::Simulator,
+    simulator::SimulatorImpl,
+};
+
+#[cfg(target_arch = "wasm32")]
+pub use crate::simulator::SimulatorImpl;
 
 pub const ID_LEN: usize = 32;
 
