@@ -7,62 +7,42 @@ edition = "2021"
 borsh = { version = "0.10.3", default-features = false }
 bytemuck = { version = "1.17.0", features = ["derive"] }
 cfg-if = "1.0.0"
-displaydoc = { version = "0.2", default-features = false }
+displaydoc = { version = "0.2.5", default-features = false }
 hashbrown = "0.14.5"
-hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
-parking_lot = "0.12.1"
-spin = { version = "0.9.8", default-features = false, features = ["rwlock", "mutex", "spin_mutex"] }
-sha2 = { version = "0.10", default-features = false }
-sha3 = { version = "0.10", default-features = false }
-curve25519-dalek = { version = "3.2", default-features = false, features = ["u64_backend"] }
-futures = { version = "0.3", default-features = false, features = ["executor", "async-await"] }
-subtle = { version = "2.5", default-features = false }
-thiserror = { version = "1.0", optional = true }
-async-trait = { version = "0.1", optional = true }
-tokio = { version = "1.0", features = ["sync", "rt", "macros"], optional = true }
-wasmtime = { version = "25.0", features = ["async"], optional = true }
+hex = { version = "0.4.3", default-features = false }
 sdk-macros = { path = "../sdk-macros" }
+spin = { version = "0.9.8", default-features = false, features = ["rwlock", "mutex", "spin_mutex"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-simulator = { path = "../simulator", features = ["std"] }
-tokio = { version = "1.0", features = ["full"] }
-thiserror = "1.0"
+wasmtime = { version = "25.0.3", default-features = false, features = ["async"] }
+tokio = { version = "1.36.0", features = ["rt", "macros"] }
 async-trait = "0.1"
-wasmtime = { version = "25.0", features = ["async"] }
-ed25519-dalek = { version = "1.0", default-features = false, features = ["u64_backend", "std"] }
+thiserror = "1.0.56"
+parking_lot = "0.12.1"
+futures = { version = "0.3.30", default-features = false }
+simulator = { path = "../simulator" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wee_alloc = "0.4"
 getrandom = { version = "0.2", features = ["js"] }
-
-[dev-dependencies]
-env_logger = "0.11.5"
-tokio = { version = "1.0", features = ["full", "test-util"] }
-test-log = "0.2.14"
-test-crate = { path = "tests/test-crate" }
-borsh = { version = "0.10.3", features = ["std"] }
-criterion = "0.5"
-iai = "0.1"
-wasmlanche-test = { path = "wasmlanche-test" }
 
 [features]
 default = ["std"]
 std = [
     "hex/std",
     "spin/std",
-    "borsh/std",
-    "thiserror",
-    "async-trait",
-    "tokio",
-    "wasmtime"
+    "borsh/std"
 ]
-bindings = []
-test = []
+test = ["std"]
+build = ["std"]
+bindings = []  # No longer tied to std
 debug = []
-build = []
 
-[package.metadata.docs.rs]
-all-features = true
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full", "test-util"] }
+test-log = "0.2.14"
+test-crate = { path = "tests/test-crate" }
+criterion = "0.5"
 
 [[bench]]
 name = "call_contract_time"

@@ -138,12 +138,12 @@ impl Host for HostImpl {
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[async_trait::async_trait]
 impl SimulatorExt for HostImpl {
-    fn get_balance_async<'a>(&'a self, actor: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
-        Box::pin(async move { Simulator::get_balance(self, actor) })
+    fn get_balance_async<'a>(&'a self, _actor: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
+        Box::pin(async move { Simulator::get_balance(self, _actor) })
     }
 
-    fn set_balance_async<'a>(&'a mut self, actor: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move { Simulator::set_balance(self, actor, balance) })
+    fn set_balance_async<'a>(&'a mut self, _actor: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { Simulator::set_balance(self, _actor, balance) })
     }
 
     fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
@@ -166,7 +166,7 @@ impl SimulatorExt for HostImpl {
 
     fn execute<'a>(
         &'a mut self,
-        actor: &'a WasmlAddress,
+        _actor: &'a WasmlAddress,
         _target: &'a [u8],
         _method: &'a str,
         _args: &'a [u8],

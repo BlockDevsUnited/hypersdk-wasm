@@ -109,7 +109,7 @@ impl StateAccess for EventLog {
             .map_err(|e| StateError::State(e.to_string()))
     }
 
-    async fn get_state<S: BorshDeserialize + StateKey + Send + Sync>(&self) -> Result<Option<S>, StateError> {
+    async fn get_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&self) -> Result<Option<S>, StateError> {
         match self.get_state(&S::key(&S::default())) {
             Some(bytes) => {
                 S::try_from_slice(bytes)
@@ -120,7 +120,7 @@ impl StateAccess for EventLog {
         }
     }
 
-    async fn delete_state<S: BorshDeserialize + StateKey + Send + Sync>(&mut self) -> Result<Option<S>, StateError> {
+    async fn delete_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&mut self) -> Result<Option<S>, StateError> {
         match self.delete_state(&S::key(&S::default())) {
             Ok(Some(bytes)) => {
                 S::try_from_slice(&bytes)

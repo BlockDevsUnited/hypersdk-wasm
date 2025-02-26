@@ -91,7 +91,7 @@ use wasmtime::{Engine, Store, Module, Linker, Config, Caller};
 
 use crate::{
     events::{Event, EventLog},
-    gas::{GasCounter, MAX_CALL_DEPTH},
+    gas::{GasCounter},
     types::WasmlAddress,
 };
 

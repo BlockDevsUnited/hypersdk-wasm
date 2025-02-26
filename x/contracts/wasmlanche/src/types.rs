@@ -10,7 +10,6 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use borsh::maybestd::io::{self, Write, Read, Result as IoResult};
 use bytemuck::{Pod, Zeroable};
 use core::fmt;
-use core::mem::size_of;
 use hex;
 
 /// Byte length of an action ID.

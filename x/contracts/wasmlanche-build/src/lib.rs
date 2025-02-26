@@ -20,6 +20,8 @@ use std::env;
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Result;
+
 pub const BUILD_DIR_NAME: &str = "target";
 const WASM_TARGET: &str = "wasm32-unknown-unknown";
 const RELEASE_PROFILE: &str = "release";
@@ -27,7 +29,7 @@ const RELEASE_PROFILE: &str = "release";
 /// Put this in your build.rs file. It currently relies on `/build` directory to be in your crate root.
 /// # Panics
 /// Will panic when attempting to build the wasm file fails.
-pub fn build_wasm() {
+pub fn build_wasm() -> Result<()> {
     let target = env::var("TARGET").unwrap();
     let profile = env::var("PROFILE").unwrap();
 
@@ -56,78 +58,51 @@ pub fn build_wasm() {
             })
             .collect::<Vec<_>>();
 
-        let target_dir = format!("{manifest_dir}/{BUILD_DIR_NAME}");
-        let mut command = Command::new("cargo");
-        command
-            .arg("rustc")
+        let mut build_cmd = Command::new("cargo");
+        build_cmd
+            .current_dir(&manifest_dir)
+            .env("RUSTFLAGS", "-C target-feature=+crt-static")
+            .arg("build")
             .arg("--target")
             .arg(WASM_TARGET)
-            .arg("--target-dir")
-            .arg(&target_dir);
-
-        if profile == RELEASE_PROFILE {
-            command.arg("--release");
-        }
+            .arg("--profile")
+            .arg(profile);
 
         if !features.is_empty() {
-            command.arg("--features").arg(features.join(","));
+            build_cmd.arg("--features").arg(features.join(","));
         }
 
-        command.arg("--crate-type").arg("cdylib");
+        let status = build_cmd.status()?;
 
-        let cargo_build_output = command
-            .output()
-            .expect("command should execute even if it fails");
-
-        let profile = if profile == RELEASE_PROFILE {
-            "release"
-        } else {
-            "debug"
-        };
-
-        if !cargo_build_output.status.success() {
-            let stdout = String::from_utf8_lossy(&cargo_build_output.stdout);
-            let stderr = String::from_utf8_lossy(&cargo_build_output.stderr);
-
-            println!("cargo:warning=stdout:");
-
-            for line in stdout.lines() {
-                println!("cargo:warning={line}");
-            }
-
-            println!("cargo:warning=stderr:");
-
-            for line in stderr.lines() {
-                println!("cargo:warning={line}");
-            }
-
-            println!("cargo:warning=exit-status={}", cargo_build_output.status);
-
-            panic!("failed to build wasm file");
+        if !status.success() {
+            anyhow::bail!("failed to build wasm file");
         }
 
-        let target_dir = Path::new(&target_dir)
-            .join(WASM_TARGET)
-            .join(profile)
-            .join(format!("{}.wasm", package_name.replace('-', "_")));
+        #[cfg(feature = "wasm-opt")]
+        {
+            use wasm_opt::OptimizationOptions;
 
-        let target_dir = match target_dir.canonicalize() {
-            Ok(target_dir) => target_dir,
-            err @ Err(_) => {
-                println!("cargo:warning= not found -> {target_dir:?}");
-                err.expect("failed to canonicalize wasm file path")
-            }
-        };
+            let target_dir = Path::new(&manifest_dir).join(BUILD_DIR_NAME);
+            let wasm_file = target_dir
+                .join(WASM_TARGET)
+                .join(profile)
+                .join(format!("{}.wasm", package_name));
 
-        println!("cargo:warning=`.wasm` file at {target_dir:?}");
+            OptimizationOptions::new_optimize_for_size()
+                .run(&wasm_file, &wasm_file)?;
+        }
+    }
 
-        let target_dir = target_dir
-            .to_str()
-            .expect("crate name must not contain any non-utf8 characters");
-        println!("cargo:rustc-env=CONTRACT_PATH={target_dir}");
+    Ok(())
+}
 
-        println!(
-            r#"cargo:warning=If the simulator fails to find the "{package_name}" contract, try running `cargo clean -p {package_name}` followed by `cargo test` again."#
-        );
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_works() {
+        let result = build_wasm();
+        assert!(result.is_ok());
     }
 }

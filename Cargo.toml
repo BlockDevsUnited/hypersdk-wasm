@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = [
   "x/contracts/sdk-macros",
   "x/contracts/wasmlanche",
@@ -13,9 +14,8 @@ members = [
   "x/contracts/examples/tutorial",
   "x/contracts/examples/nft",
   "x/contracts/examples/multisig",
-  "x/contracts/wasmlanche/wasmlanche-test", "x/contracts/wasmlanche-build",
+  "x/contracts/wasmlanche/wasmlanche-test",
 ]
-resolver = "2"
 
 [profile.release]
 opt-level = "s"
@@ -25,8 +25,19 @@ overflow-checks = true
 panic = 'abort'
 strip = true
 
+[profile.wasm]
+inherits = "release"
+opt-level = 's'
+lto = true
+codegen-units = 1
+panic = 'abort'
+
+[profile.wasm.build-override]
+opt-level = 's'
+codegen-units = 1
+
 [workspace.dependencies]
-sdk-macros = { path = "x/contracts/sdk-macros" }
 wasmlanche = { path = "x/contracts/wasmlanche", default-features = false }
-simulator = { path = "x/contracts/simulator" }
-thiserror = "1.0.61"
+sdk-macros = { path = "x/contracts/sdk-macros" }
+simulator = { path = "x/contracts/simulator", default-features = false }
+thiserror = "1.0"

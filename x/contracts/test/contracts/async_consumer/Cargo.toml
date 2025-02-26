@@ -1,0 +1,23 @@
+[package]
+name = "async_consumer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sdk-macros = { path = "../../../sdk-macros" }
+wasmlanche = { workspace = true, default-features = false, features = ["bindings"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wee_alloc = "0.4"
+
+[features]
+default = ["bindings"]
+bindings = []
+
+[profile.release]
+lto = true
+opt-level = 's'
+codegen-units = 1

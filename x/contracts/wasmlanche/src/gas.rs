@@ -1,14 +1,6 @@
-#[cfg(not(feature = "std"))]
-use alloc::string::String;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
+// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
+// See the file LICENSE for licensing terms.
 
-#[cfg(feature = "std")]
-use std::string::String;
-#[cfg(feature = "std")]
-use std::vec::Vec;
-
-use core::num::NonZeroU64;
 use crate::error::Error;
 
 // Gas costs for various operations

@@ -71,10 +71,7 @@ mod tests {
         let err = Error::from(io_err);
         assert!(matches!(err, Error::Unknown(_)));
 
-        let borsh_err = borsh::maybestd::io::Error::new(
-            borsh::maybestd::io::ErrorKind::Other,
-            "test error"
-        );
+        let borsh_err = io::Error::new(io::ErrorKind::Other, "test error");
         let err = Error::from_borsh_io(borsh_err);
         assert!(matches!(err, Error::Serialization(_)));
     }

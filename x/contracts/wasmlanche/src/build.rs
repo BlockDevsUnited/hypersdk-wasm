@@ -9,23 +9,21 @@ use std::path::Path;
 use std::process::Command;
 
 pub const BUILD_DIR_NAME: &str = "target";
-const WASM_TARGET: &str = "wasm32-unknown-unknown";
-const RELEASE_PROFILE: &str = "release";
 
 #[cfg(feature = "build")]
 #[allow(clippy::module_name_repetitions)]
 /// Put this in your build.rs file. It currently relies on `/build` directory to be in your crate root.
 /// # Panics
 /// Will panic when attempting to build the wasm file fails.
-pub fn build_wasm() {
+pub fn build_wasm() -> Result<(), Box<dyn std::error::Error>> {
     let target = env::var("TARGET").unwrap();
     let profile = env::var("PROFILE").unwrap();
 
-    if target != WASM_TARGET {
+    if target != "wasm32-unknown-unknown" {
         let package_name = env::var("CARGO_PKG_NAME").unwrap();
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
-        let profile = if profile == RELEASE_PROFILE {
+        let profile = if profile == "release" {
             &profile
         } else {
             "test"
@@ -51,11 +49,11 @@ pub fn build_wasm() {
         command
             .arg("rustc")
             .arg("--target")
-            .arg(WASM_TARGET)
+            .arg("wasm32-unknown-unknown")
             .arg("--target-dir")
             .arg(&target_dir);
 
-        if profile == RELEASE_PROFILE {
+        if profile == "release" {
             command.arg("--release");
         }
 
@@ -69,7 +67,7 @@ pub fn build_wasm() {
             .output()
             .expect("command should execute even if it fails");
 
-        let profile = if profile == RELEASE_PROFILE {
+        let profile = if profile == "release" {
             "release"
         } else {
             "debug"
@@ -93,11 +91,11 @@ pub fn build_wasm() {
 
             println!("cargo:warning=exit-status={}", cargo_build_output.status);
 
-            panic!("failed to build wasm file");
+            return Err("failed to build wasm file".into());
         }
 
         let target_dir = Path::new(&target_dir)
-            .join(WASM_TARGET)
+            .join("wasm32-unknown-unknown")
             .join(profile)
             .join(format!("{}.wasm", package_name.replace('-', "_")));
 
@@ -120,9 +118,11 @@ pub fn build_wasm() {
             r#"cargo:warning=If the simulator fails to find the "{package_name}" contract, try running `cargo clean -p {package_name}` followed by `cargo test` again."#
         );
     }
+
+    Ok(())
 }
 
 #[cfg(feature = "build")]
 fn main() {
-    build_wasm();
+    build_wasm().expect("build_wasm failed");
 }

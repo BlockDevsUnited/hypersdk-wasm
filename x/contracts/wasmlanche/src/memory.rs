@@ -10,18 +10,16 @@
 #[cfg(not(feature = "std"))]
 use alloc::{
     alloc::{alloc as allocate, dealloc as deallocate, handle_alloc_error, Layout},
-    string::String,
     vec::Vec,
 };
 
 #[cfg(feature = "std")]
 use std::{
     alloc::{alloc as allocate, dealloc as deallocate, handle_alloc_error, Layout},
-    string::String,
     vec::Vec,
 };
 
-use core::{mem::ManuallyDrop, ops::Deref, slice, fmt};
+use core::{mem::ManuallyDrop, ops::Deref, slice};
 
 pub mod allocations;
 
