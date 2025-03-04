@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ava-labs/avalanchego/cache"
@@ -25,6 +26,7 @@ type WasmRuntime struct {
 	contractCache cache.Cacher[string, *wasmtime.Module]
 
 	callerInfo map[uintptr]*CallInfo
+	callerInfoMu sync.RWMutex // Mutex to protect callerInfo map
 	linker     *wasmtime.Linker
 	limits     ResourceLimits
 	callInfo   atomic.Value // Used to store current CallInfo for tests
@@ -100,6 +102,7 @@ func NewRuntime(
 		cfg:        cfg,
 		engine:     wasmtime.NewEngineWithConfig(cfg.wasmConfig),
 		callerInfo: map[uintptr]*CallInfo{},
+		callerInfoMu: sync.RWMutex{},
 		contractCache: cache.NewSizedLRU(cfg.ContractCacheSize, func(id string, mod *wasmtime.Module) int {
 			bytes, err := mod.Serialize()
 			if err != nil {
@@ -247,14 +250,20 @@ func toMapKey(storeLike wasmtime.Storelike) uintptr {
 }
 
 func (r *WasmRuntime) setCallInfo(storeLike wasmtime.Storelike, info *CallInfo) {
+	r.callerInfoMu.Lock()
+	defer r.callerInfoMu.Unlock()
 	r.callerInfo[toMapKey(storeLike)] = info
 }
 
 func (r *WasmRuntime) getCallInfo(storeLike wasmtime.Storelike) *CallInfo {
+	r.callerInfoMu.RLock()
+	defer r.callerInfoMu.RUnlock()
 	return r.callerInfo[toMapKey(storeLike)]
 }
 
 func (r *WasmRuntime) deleteCallInfo(storeLike wasmtime.Storelike) {
+	r.callerInfoMu.Lock()
+	defer r.callerInfoMu.Unlock()
 	delete(r.callerInfo, toMapKey(storeLike))
 }
 
