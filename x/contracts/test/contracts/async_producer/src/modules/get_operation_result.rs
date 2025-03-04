@@ -13,7 +13,10 @@ pub fn get_operation_result(ctx: &mut Context, op_id: String) -> i64 {
         return -1; // Operation not complete
     }
     
-    // For this example, we're not really checking the result
-    // Just returning a success value
-    42
+    // Try to get the result
+    match ctx.get_async_result::<i64>(&op_id) {
+        Ok(Some(result)) => result,
+        Ok(None) => -2, // Operation completed but no result
+        Err(_) => -3,   // Error getting result
+    }
 }

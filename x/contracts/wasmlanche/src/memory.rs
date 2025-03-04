@@ -133,17 +133,18 @@ impl From<HostPtr> for Vec<u8> {
 }
 
 impl HostPtr {
-    #[must_use]
+    /// Returns true if the underlying pointer is null
     pub fn is_null(&self) -> bool {
         self.0.is_null()
     }
 
-    pub fn null() -> Self {
-        Self(core::ptr::null())
-    }
-
+    /// Returns the raw pointer
     pub fn as_ptr(&self) -> *const u8 {
         self.0
+    }
+
+    pub fn null() -> Self {
+        Self(core::ptr::null())
     }
 
     pub fn from_raw(ptr: *const u8) -> Self {

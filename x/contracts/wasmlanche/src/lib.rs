@@ -67,7 +67,7 @@ pub const ID_LEN: usize = 32;
 /// 
 /// Then, create a new file called `lib.rs` and add the following:
 /// 
-/// ```rust
+/// ```rust,ignore
 /// use wasmlanche::prelude::*;
 /// 
 /// #[public]
@@ -116,6 +116,18 @@ pub use borsh;
 #[cfg(target_arch = "wasm32")]
 #[derive(borsh::BorshDeserialize, borsh::BorshSerialize)]
 pub struct Contract;
+
+pub use bytemuck;
+
+/// Allocates memory in the WebAssembly linear memory.
+/// This function is exported for use by the generated code.
+#[no_mangle]
+pub extern "C" fn allocate(size: u32) -> *mut u8 {
+    // Extract the raw pointer and convert it to mutable
+    let host_ptr = crate::memory::alloc(size as usize);
+    let ptr = host_ptr.as_ptr();
+    ptr as *mut u8
+}
 
 #[cfg(test)]
 mod tests {

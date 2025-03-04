@@ -20,7 +20,7 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
     let is_async = input.sig.asyncness.is_some();
 
     // Extract and validate context parameter
-    let context_pat_type = match inputs.next() {
+    let _context_pat_type = match inputs.next() {
         Some(FnArg::Typed(pat_type)) => {
             if let Type::Reference(TypeReference {
                 mutability: Some(_),
@@ -85,9 +85,11 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
         .map(|pat_type| &*pat_type.pat)
         .collect();
 
-    // Generate the public function
-    let block = input.block;
-    let ret_type = input.sig.output;
+    // Important: Clone the input to avoid the partial move
+    let input_clone = input.clone();
+    
+    // Extract return type and attrs
+    let ret_type = &input.sig.output;
     let attrs = &input.attrs;
 
     let function_call = if is_async {
@@ -100,21 +102,20 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
         }
     };
 
-    let async_token = if is_async {
-        quote! { async }
-    } else {
-        quote! {}
-    };
+    // Generate parameter indices for deserializing parameters
+    let _indices: Vec<proc_macro2::TokenStream> = (0..other_inputs.len())
+        .map(|i| {
+            let idx = proc_macro2::Literal::usize_unsuffixed(i);
+            quote! { #idx }
+        })
+        .collect();
 
-    let wasm_async_token = if is_async {
-        quote! { async }
-    } else {
-        quote! {}
-    };
+    // Generate parameter types for deserializing
+    let param_types: Vec<_> = other_inputs.iter().map(|pt| &pt.ty).collect();
 
     let wasm_result = if is_async {
         quote! {
-            let result = futures::executor::block_on(async {
+            let result: Result<#ret_type, ::wasmlanche::Error> = futures::executor::block_on(async {
                 let args_slice = unsafe {
                     let ptr = args as *const u8;
                     let len = *(ptr.offset(-4) as *const u32) as usize;
@@ -123,30 +124,60 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
 
                 let mut ctx = Context::new();
                 
-                let mut offset = core::mem::size_of::<Context>();
-                
+                // Simple parameter parsing - each parameter is a separate Borsh-serialized object
+                let mut param_index = 0;
                 #(
-                    let #param_names = if offset < args_slice.len() {
-                        let param_bytes = &args_slice[offset..];
-                        match ::borsh::from_slice(param_bytes) {
-                            Ok(val) => {
-                                // Update offset for next parameter
-                                offset += ::borsh::serialized_size(&val).unwrap_or(0);
-                                val
-                            },
-                            Err(_) => Default::default()
-                        }
+                    // Check if we have enough data left
+                    if param_index >= args_slice.len() {
+                        return Err(::wasmlanche::Error::Serialization(
+                            alloc::string::String::from("Not enough parameter data in args_slice")
+                        ));
+                    }
+                    
+                    // Get the length of the next parameter
+                    let param_len = if param_index + 4 <= args_slice.len() {
+                        let mut len_bytes = [0u8; 4];
+                        len_bytes.copy_from_slice(&args_slice[param_index..param_index+4]);
+                        u32::from_le_bytes(len_bytes) as usize
                     } else {
-                        Default::default()
+                        return Err(::wasmlanche::Error::Serialization(
+                            alloc::string::String::from("Failed to read parameter length")
+                        ));
+                    };
+                    
+                    // Move past the length
+                    param_index += 4;
+                    
+                    // Check if we have enough data for this parameter
+                    if param_index + param_len > args_slice.len() {
+                        return Err(::wasmlanche::Error::Serialization(
+                            alloc::string::String::from("Parameter data exceeds available bytes")
+                        ));
+                    }
+                    
+                    // Get the parameter bytes
+                    let param_bytes = &args_slice[param_index..param_index + param_len];
+                    
+                    // Move past this parameter
+                    param_index += param_len;
+                    
+                    // Deserialize the parameter
+                    let #param_names = match <#param_types as ::borsh::BorshDeserialize>::try_from_slice(param_bytes) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            return Err(::wasmlanche::Error::Serialization(
+                                alloc::string::String::from(alloc::format!("Failed to deserialize parameter: {}", err))
+                            ));
+                        }
                     };
                 )*
 
-                #function_call
+                Ok(#function_call)
             });
         }
     } else {
         quote! {
-            let result = {
+            let result: Result<#ret_type, ::wasmlanche::Error> = {
                 let args_slice = unsafe {
                     let ptr = args as *const u8;
                     let len = *(ptr.offset(-4) as *const u32) as usize;
@@ -155,59 +186,107 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
 
                 let mut ctx = Context::new();
                 
-                let mut offset = core::mem::size_of::<Context>();
-                
+                // Simple parameter parsing - each parameter is a separate Borsh-serialized object
+                let mut param_index = 0;
                 #(
-                    let #param_names = if offset < args_slice.len() {
-                        let param_bytes = &args_slice[offset..];
-                        match ::borsh::from_slice(param_bytes) {
-                            Ok(val) => {
-                                // Update offset for next parameter
-                                offset += ::borsh::serialized_size(&val).unwrap_or(0);
-                                val
-                            },
-                            Err(_) => Default::default()
-                        }
+                    // Check if we have enough data left
+                    if param_index >= args_slice.len() {
+                        return Err(::wasmlanche::Error::Serialization(
+                            alloc::string::String::from("Not enough parameter data in args_slice")
+                        ));
+                    }
+                    
+                    // Get the length of the next parameter
+                    let param_len = if param_index + 4 <= args_slice.len() {
+                        let mut len_bytes = [0u8; 4];
+                        len_bytes.copy_from_slice(&args_slice[param_index..param_index+4]);
+                        u32::from_le_bytes(len_bytes) as usize
                     } else {
-                        Default::default()
+                        return Err(::wasmlanche::Error::Serialization(
+                            alloc::string::String::from("Failed to read parameter length")
+                        ));
+                    };
+                    
+                    // Move past the length
+                    param_index += 4;
+                    
+                    // Check if we have enough data for this parameter
+                    if param_index + param_len > args_slice.len() {
+                        return Err(::wasmlanche::Error::Serialization(
+                            alloc::string::String::from("Parameter data exceeds available bytes")
+                        ));
+                    }
+                    
+                    // Get the parameter bytes
+                    let param_bytes = &args_slice[param_index..param_index + param_len];
+                    
+                    // Move past this parameter
+                    param_index += param_len;
+                    
+                    // Deserialize the parameter
+                    let #param_names = match <#param_types as ::borsh::BorshDeserialize>::try_from_slice(param_bytes) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            return Err(::wasmlanche::Error::Serialization(
+                                alloc::string::String::from(alloc::format!("Failed to deserialize parameter: {}", err))
+                            ));
+                        }
                     };
                 )*
 
-                #function_call
+                Ok(#function_call)
             };
         }
     };
 
-    Ok(quote! {
+    // Generate the final token stream
+    let output = quote! {
+        // Redefine the function as a non-public function
         #(#attrs)*
-        #[cfg_attr(target_arch = "wasm32", no_mangle)]
-        pub #async_token fn #name(#context_pat_type, #(#other_inputs),*) #ret_type {
-            #block
-        }
+        #[allow(unused_variables)]
+        #input_clone
 
-        #[cfg(target_arch = "wasm32")]
-        mod __wasm_exports {
-            use super::*;
+        // Define the public WASM entry point
+        #[no_mangle]
+        pub unsafe extern "C" fn #wasm_name(args: *const u8) -> *mut u8 {
+            use ::wasmlanche::{Context, Error};
+            use ::borsh::{BorshSerialize, BorshDeserialize};
 
-            pub struct Args {
-                pub ctx: Context,
-                #(pub #other_inputs),*
+            #wasm_result
+
+            // Serialize the result or error
+            let bytes = match result {
+                Ok(result) => match ::borsh::BorshSerialize::try_to_vec(&result) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let error = ::wasmlanche::Error::Serialization(
+                            alloc::string::String::from(alloc::format!("Failed to serialize result: {}", e))
+                        );
+                        match ::borsh::BorshSerialize::try_to_vec(&error) {
+                            Ok(bytes) => bytes,
+                            Err(_) => {
+                                alloc::vec![0u8; 0]
+                            }
+                        }
+                    }
+                },
+                Err(err) => match ::borsh::BorshSerialize::try_to_vec(&err) {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
+                        alloc::vec![0u8; 0]
+                    }
+                },
+            };
+
+            // Copy result to WASM heap
+            let result_ptr = ::wasmlanche::allocate(bytes.len() as u32);
+            unsafe {
+                let result_slice = core::slice::from_raw_parts_mut(result_ptr, bytes.len());
+                result_slice.copy_from_slice(&bytes);
             }
-
-            #[no_mangle]
-            pub unsafe extern "C-unwind" fn #wasm_name(args: u32) -> i64 {
-                // Panic handling is now managed by the wasmlanche runtime
-                // No need to call register_panic here
-
-                #wasm_result
-
-                let result_bytes = ::borsh::to_vec(&result)
-                    .expect("Failed to serialize result");
-
-                let ptr = result_bytes.as_ptr() as i64;
-                let len = result_bytes.len() as i64;
-                (ptr << 32) | len
-            }
+            result_ptr
         }
-    })
+    };
+
+    Ok(output)
 }

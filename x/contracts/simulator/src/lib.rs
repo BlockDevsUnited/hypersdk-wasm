@@ -96,7 +96,7 @@ pub struct Simulator {
     store: Store<()>,
     state: Arc<RwLock<SimulatorState>>,
     result: Option<Vec<u8>>,
-    actor: Address,
+    _actor: Address,
 }
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
@@ -116,7 +116,7 @@ impl Simulator {
             store,
             state,
             result: None,
-            actor,
+            _actor: actor,
         }
     }
 
@@ -134,7 +134,7 @@ impl Simulator {
             store,
             state,
             result: None,
-            actor: Address::default(),
+            _actor: Address::default(),
         }
     }
 

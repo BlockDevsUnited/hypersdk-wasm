@@ -21,7 +21,7 @@ pub struct ComplexReturn {
 }
 
 #[public]
-pub fn get_value(ctx: &mut Context, _op_id: String) -> ComplexReturn {
+pub fn get_value(ctx: &mut Context) -> ComplexReturn {
     // Added a second parameter to maintain compatibility with the test
     // This parameter is not actually needed in the synchronous version
     ComplexReturn {
@@ -31,7 +31,7 @@ pub fn get_value(ctx: &mut Context, _op_id: String) -> ComplexReturn {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[global_allocator]
+// #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[cfg(target_arch = "wasm32")]

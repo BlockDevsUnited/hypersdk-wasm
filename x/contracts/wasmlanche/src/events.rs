@@ -66,22 +66,22 @@ impl EventLog {
         match &event {
             Event::StateChange { key, value } => {
                 if key.len() + value.len() > MAX_EVENT_DATA_SIZE {
-                    return Err(Error::DataTooLarge("State change data exceeds maximum size"));
+                    return Err(Error::DataTooLarge(String::from("State change data exceeds maximum size")));
                 }
                 self.state.insert(key.clone(), value.clone());
             }
             Event::Custom { name, data, .. } => {
                 if name.len() > MAX_EVENT_NAME_LENGTH {
-                    return Err(Error::NameTooLong("Event name exceeds maximum length"));
+                    return Err(Error::NameTooLong(String::from("Event name exceeds maximum length")));
                 }
                 if data.len() > MAX_EVENT_DATA_SIZE {
-                    return Err(Error::DataTooLarge("Event data exceeds maximum size"));
+                    return Err(Error::DataTooLarge(String::from("Event data exceeds maximum size")));
                 }
             }
         }
         
         if self.events.len() >= MAX_EVENTS_PER_CONTRACT {
-            return Err(Error::TooManyEvents("Maximum number of events exceeded"));
+            return Err(Error::TooManyEvents(String::from("Maximum number of events exceeded")));
         }
         self.events.push_back(event);
         Ok(())

@@ -13,7 +13,7 @@ mod public;
 /// Additional parameters must implement `BorshSerialize` + `BorshDeserialize`.
 /// The return type must also implement `BorshSerialize` + `BorshDeserialize`.
 #[proc_macro_attribute]
-pub fn public(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn public(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
     match public::impl_public(input) {
         Ok(tokens) => tokens.into(),

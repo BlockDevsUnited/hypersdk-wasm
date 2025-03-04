@@ -84,7 +84,7 @@ impl Context {
         self.host.emit_event(Event::StateChange {
             key: key.to_vec(),
             value,
-        }).map_err(|_| Error::State("Failed to store state"))?;
+        }).map_err(|_| Error::State(String::from("Failed to store state")))?;
         Ok(())
     }
 
@@ -104,7 +104,7 @@ impl Context {
             if result == 0 {
                 Ok(())
             } else {
-                Err(Error::State("Failed to store state"))
+                Err(Error::State(String::from("Failed to store state")))
             }
         }
     }
@@ -135,7 +135,7 @@ impl Context {
         unsafe {
             let result = get_state(key.as_ptr(), key.len());
             if result < 0 {
-                return Err(Error::State("Failed to get state"));
+                return Err(Error::State(String::from("Failed to get state")));
             }
             if result == 0 {
                 return Ok(None);
@@ -143,7 +143,7 @@ impl Context {
             let mut value = Vec::with_capacity(result as usize);
             let result = get_value(value.as_mut_ptr(), result as usize);
             if result < 0 {
-                return Err(Error::State("Failed to get value"));
+                return Err(Error::State(String::from("Failed to get value")));
             }
             value.set_len(result as usize);
             Ok(Some(value))
@@ -171,7 +171,7 @@ impl Context {
             if result == 0 {
                 Ok(())
             } else {
-                Err(Error::State("Failed to store state"))
+                Err(Error::State(String::from("Failed to store state")))
             }
         }
     }
@@ -193,7 +193,7 @@ impl Context {
         unsafe {
             let result = get_state(key.as_ptr(), key.len());
             if result < 0 {
-                return Err(Error::State("Failed to get state"));
+                return Err(Error::State(String::from("Failed to get state")));
             }
             if result == 0 {
                 return Ok(None);
@@ -204,7 +204,7 @@ impl Context {
             }
             let result = get_value(value.as_mut_ptr(), result as usize);
             if result < 0 {
-                return Err(Error::State("Failed to get value"));
+                return Err(Error::State(String::from("Failed to get value")));
             }
             value.set_len(result as usize);
             Ok(Some(S::try_from_slice(&value)?))
@@ -222,7 +222,7 @@ impl Context {
                 unsafe {
                     let result = delete_state(key.as_ptr(), key.len());
                     if result < 0 {
-                        return Err(Error::State("Failed to delete state"));
+                        return Err(Error::State(String::from("Failed to delete state")));
                     }
                 }
                 Ok(Some(state))
@@ -257,7 +257,7 @@ impl Context {
             Vec::from(crate::memory::read_memory(raw_id as u64))
         };
 
-        String::from_utf8(id_bytes).map_err(|_| Error::Serialization("Failed to convert operation ID to string"))
+        String::from_utf8(id_bytes).map_err(|_| Error::Serialization(String::from("Failed to convert operation ID to string")))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -311,7 +311,7 @@ impl Context {
             0 => Ok(None),
             _ => match T::try_from_slice(&result_bytes) {
                 Ok(value) => Ok(Some(value)),
-                Err(_) => Err(Error::Serialization("Failed to deserialize operation result")),
+                Err(_) => Err(Error::Serialization(String::from("Failed to deserialize operation result"))),
             },
         }
     }
@@ -328,7 +328,7 @@ impl Context {
     #[cfg(target_arch = "wasm32")]
     pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> Result<String, StateError> {
         let mut bytes = Vec::new();
-        value.serialize(&mut bytes).map_err(|_| Error::Serialization("Failed to serialize value"))?;
+        value.serialize(&mut bytes).map_err(|_| Error::Serialization(String::from("Failed to serialize value")))?;
         self.store_by_key_async(key, bytes)
     }
 
@@ -354,7 +354,7 @@ impl Context {
             unsafe {
                 let result = store_async(_key.as_ptr(), _key.len(), _value.as_ptr(), _value.len());
                 if result < 0 {
-                    return Err(Error::State("Failed to start async store operation"));
+                    return Err(Error::State(String::from("Failed to start async store operation")));
                 }
             }
         }

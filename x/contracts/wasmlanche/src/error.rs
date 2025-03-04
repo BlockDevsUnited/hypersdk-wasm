@@ -3,23 +3,33 @@
 
 use core::fmt;
 use core::error;
+use borsh::{BorshSerialize, BorshDeserialize};
 use borsh::maybestd::io;
 
-#[derive(Debug)]
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+
+#[cfg(feature = "std")]
+use std::string::String;
+
+#[derive(Debug, BorshSerialize, BorshDeserialize)]
 pub enum Error {
-    State(&'static str),
-    Event(&'static str),
-    Gas(&'static str),
-    Memory(&'static str),
-    Serialization(&'static str),
-    Contract(&'static str),
-    Crypto(&'static str),
-    TooExpensive(&'static str),
-    Unknown(&'static str),
-    NameTooLong(&'static str),
-    DataTooLarge(&'static str),
-    TooManyEvents(&'static str),
-    InvalidChain(&'static str),
+    State(String),
+    Event(String),
+    Gas(String),
+    Memory(String),
+    Serialization(String),
+    Contract(String),
+    Crypto(String),
+    TooExpensive(String),
+    Unknown(String),
+    NameTooLong(String),
+    DataTooLarge(String),
+    TooManyEvents(String),
+    InvalidChain(String),
 }
 
 impl fmt::Display for Error {
@@ -50,14 +60,14 @@ impl error::Error for Error {
 
 impl From<io::Error> for Error {
     fn from(_err: io::Error) -> Self {
-        Error::Unknown("IO error occurred")
+        Error::Unknown(String::from("IO error occurred"))
     }
 }
 
 // Helper method for handling borsh::maybestd::io::Error
 impl Error {
     pub fn from_borsh_io(_err: borsh::maybestd::io::Error) -> Self {
-        Error::Serialization("Failed to serialize/deserialize")
+        Error::Serialization(String::from("Failed to serialize/deserialize"))
     }
 }
 
