@@ -8,15 +8,10 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(all(target_arch = "wasm32", not(feature = "futures_executor")))]
-#[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
-#[cfg(all(target_arch = "wasm32", not(feature = "std"), not(feature = "futures_executor")))]
-#[alloc_error_handler]
-fn alloc_error(_: core::alloc::Layout) -> ! {
-    core::panic!("memory allocation error")
-}
+// NOTE: We've removed the global allocator and alloc error handler declarations
+// to avoid conflicts with the std library when using futures_executor or std features.
+// This allows the program to use the allocator provided by the standard library
+// or other dependencies automatically.
 
 pub mod build;
 pub mod context;
@@ -112,10 +107,6 @@ pub mod prelude {
 
 // Re-export borsh for use by contracts
 pub use borsh;
-
-#[cfg(target_arch = "wasm32")]
-#[derive(borsh::BorshDeserialize, borsh::BorshSerialize)]
-pub struct Contract;
 
 pub use bytemuck;
 

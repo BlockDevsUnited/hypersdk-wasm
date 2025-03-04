@@ -19,7 +19,8 @@ wee_alloc = "0.4"
 [features]
 default = ["wasm"]
 wasm = []
-simulator = ["wasmlanche/simulator", "wasmlanche/std"]
+std = []
+simulator = ["wasmlanche/simulator", "wasmlanche/std", "std"]
 test = ["simulator"]
 futures_executor = []
 

@@ -11,7 +11,6 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use wasmlanche::types::WasmlAddress;
 use wasmlanche::Context;
 use sdk_macros::public;
-use alloc::string::String;
 
 // This struct must match the Go ComplexReturn struct
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -30,11 +29,27 @@ pub fn get_value(ctx: &mut Context) -> ComplexReturn {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-// #[global_allocator]
+// Only define global allocator in a very specific case:
+// 1. When targeting wasm32
+// 2. When NOT using futures_executor feature
+// 3. When NOT using the std feature
+#[cfg(all(
+    target_arch = "wasm32",
+    not(feature = "futures_executor"),
+    not(feature = "std")
+))]
+#[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-#[cfg(target_arch = "wasm32")]
+// Only define panic handler in a very specific case:
+// 1. When targeting wasm32
+// 2. When NOT using futures_executor feature
+// 3. When NOT using the std feature
+#[cfg(all(
+    target_arch = "wasm32",
+    not(feature = "futures_executor"),
+    not(feature = "std")
+))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     core::arch::wasm32::unreachable()

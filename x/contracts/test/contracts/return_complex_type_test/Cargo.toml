@@ -1,5 +1,5 @@
 [package]
-name = "return_complex_type"
+name = "return_complex_type_test"
 version = "0.1.0"
 edition = "2021"
 
@@ -28,8 +28,3 @@ wasmlanche = { workspace = true, features = ["debug", "test", "std", "simulator"
 
 [build-dependencies]
 wasmlanche-build = { path = "../../../wasmlanche-build" }
-
-[profile.release]
-lto = true
-opt-level = 's'
-codegen-units = 1

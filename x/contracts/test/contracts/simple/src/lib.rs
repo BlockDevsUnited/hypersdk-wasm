@@ -26,14 +26,6 @@ pub async fn get_value_async(_ctx: &mut Context) -> i64 {
     84
 }
 
-// Define panic handler only when not using futures_executor feature
-// This is a special conditional compilation config that allows the test to work by NOT defining
-// a panic handler when the futures_executor feature is enabled (which provides its own panic handler)
-#[cfg(all(target_arch = "wasm32", not(feature = "futures_executor")))]
-use core::panic::PanicInfo;
-
-#[cfg(all(target_arch = "wasm32", not(feature = "futures_executor")))]
-#[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
-    core::arch::wasm32::unreachable()
-}
+// Note: We removed the panic handler completely as it's causing conflicts
+// This will rely on the panic handler provided by the runtime or standard library
+// during compilation with futures_executor or std features.
