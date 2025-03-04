@@ -4,6 +4,9 @@
 #![no_std]
 extern crate alloc;
 
+#[cfg(not(target_arch = "wasm32"))]
+extern crate std;
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use wasmlanche::types::WasmlAddress;
 use wasmlanche::Context;
@@ -26,6 +29,10 @@ pub fn get_value(ctx: &mut Context, _op_id: String) -> ComplexReturn {
         MaxUnits: 1000,
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[cfg(target_arch = "wasm32")]
 #[panic_handler]

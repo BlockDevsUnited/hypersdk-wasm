@@ -254,7 +254,7 @@ impl Context {
                 fn generate_operation_id() -> i32;
             }
             let raw_id = generate_operation_id();
-            Vec::from(crate::memory::read_memory(raw_id))
+            Vec::from(crate::memory::read_memory(raw_id as u64))
         };
 
         String::from_utf8(id_bytes).map_err(|_| Error::Serialization("Failed to convert operation ID to string"))
@@ -304,7 +304,7 @@ impl Context {
             if result_id <= 0 {
                 return Ok(None);
             }
-            Vec::from(crate::memory::read_memory(result_id))
+            Vec::from(crate::memory::read_memory(result_id as u64))
         };
 
         match result_bytes.len() {

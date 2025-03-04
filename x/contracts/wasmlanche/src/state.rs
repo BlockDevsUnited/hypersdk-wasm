@@ -9,13 +9,13 @@ use std::{string::String, vec::Vec};
 
 use borsh::{BorshDeserialize, BorshSerialize, maybestd};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "std")]
 use thiserror::Error;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "std")]
 use async_trait::async_trait;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "std")]
 #[derive(Debug, Error)]
 pub enum Error {
     /// Error during serialization/deserialization
@@ -41,7 +41,7 @@ pub enum Error {
     InvalidData,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "std"))]
 #[derive(Debug)]
 pub enum Error {
     /// Error during serialization/deserialization
@@ -83,7 +83,7 @@ pub trait StateKey: Default {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "std")]
 #[async_trait]
 pub trait StateAccess {
     async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error>;
@@ -91,7 +91,7 @@ pub trait StateAccess {
     async fn delete_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&mut self) -> Result<Option<S>, Error>;
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "std"))]
 pub trait StateAccess {
     fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), Error>;
     fn get_state<S: BorshDeserialize + StateKey + Default>(&self) -> Result<Option<S>, Error>;
@@ -119,7 +119,7 @@ mod tests {
         state: Arc<RwLock<Option<Vec<u8>>>>,
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "std")]
     #[async_trait]
     impl StateAccess for TestStateAccess {
         async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error> {
@@ -155,7 +155,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(feature = "std"))]
     impl StateAccess for TestStateAccess {
         fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), Error> {
             let bytes = BorshSerialize::try_to_vec(state)

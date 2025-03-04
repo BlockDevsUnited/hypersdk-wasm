@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 sdk-macros = { path = "../../../sdk-macros" }
@@ -17,6 +17,11 @@ wee_alloc = "0.4"
 [features]
 default = ["wasm"]
 wasm = []
+simulator = ["wasmlanche/simulator", "wasmlanche/std"]
+test = ["simulator"]
+
+[dev-dependencies]
+wasmlanche = { path = "../../../wasmlanche", features = ["debug", "test", "std", "simulator"] }
 
 [profile.release]
 lto = true

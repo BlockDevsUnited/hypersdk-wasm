@@ -27,7 +27,7 @@ wee_alloc = "0.4"
 getrandom = { version = "0.2", features = ["js"] }
 
 [features]
-default = ["std"]
+default = ["std", "simulator"]
 std = [
     "hex/std",
     "spin/std",
@@ -37,7 +37,7 @@ std = [
 ]
 simulator = ["dep:simulator", "std"]
 wasm = []
-test = ["std"]
+test = ["std", "simulator"]
 build = ["std"]
 bindings = []  # No longer tied to std
 debug = []

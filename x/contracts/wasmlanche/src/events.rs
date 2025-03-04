@@ -16,7 +16,7 @@ use crate::error::EventError;
 use crate::gas::{MAX_EVENT_NAME_LENGTH, MAX_EVENT_DATA_SIZE, MAX_EVENTS_PER_CONTRACT};
 use crate::types::WasmlAddress;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "std")]
 use async_trait::async_trait;
 
 use crate::{
@@ -109,7 +109,7 @@ impl EventLog {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "std")]
 #[async_trait]
 impl StateAccess for EventLog {
     async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), StateError> {
@@ -147,7 +147,7 @@ impl StateAccess for EventLog {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(feature = "std"))]
 impl StateAccess for EventLog {
     fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), StateError> {
         let bytes = state.try_to_vec()
