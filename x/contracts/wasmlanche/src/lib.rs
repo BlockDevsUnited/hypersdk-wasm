@@ -13,6 +13,9 @@ extern crate alloc;
 // This allows the program to use the allocator provided by the standard library
 // or other dependencies automatically.
 
+// Define a shared key constant used for async operations
+pub const SHARED_KEY: &[u8] = b"shared_value";
+
 pub mod build;
 pub mod context;
 pub mod error;

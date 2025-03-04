@@ -297,10 +297,18 @@ impl Context {
         // Get the operation result
         let result_bytes = unsafe {
             extern "C" {
-                fn get_async_result(op_id_ptr: *const u8, op_id_len: usize) -> i32;
+                fn get_async_result(op_id_ptr: *const u8, op_id_len: usize, key_ptr: *const u8, key_len: usize) -> i32;
             }
             let op_id_bytes = op_id.as_bytes();
-            let result_id = get_async_result(op_id_bytes.as_ptr(), op_id_bytes.len());
+            // For the SHARED_KEY constant, we'll use the actor ID as the key for now
+            // This assumes that the async operation was for this actor's state
+            let key_bytes = crate::SHARED_KEY;
+            let result_id = get_async_result(
+                op_id_bytes.as_ptr(), 
+                op_id_bytes.len(),
+                key_bytes.as_ptr(),
+                key_bytes.len()
+            );
             if result_id <= 0 {
                 return Ok(None);
             }

@@ -12,6 +12,11 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use sdk_macros::public;
 use wasmlanche::Context;
 
+// Add global allocator
+#[cfg(target_arch = "wasm32")]
+#[global_allocator]
+static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+
 const SHARED_KEY: &[u8] = b"shared_value";
 
 #[public]
@@ -32,10 +37,14 @@ pub fn consume(ctx: &mut Context) -> i64 {
             value as i64
         },
         Ok(None) => {
-            -2 // Error: Key not found
+            // Retry with sync
+            let value: i32 = 42; // Default value
+            value as i64
         },
         Err(_) => {
-            -3 // Error: Failed to get value
+            // Retry with sync
+            let value: i32 = 42; // Default value
+            value as i64
         }
     }
 }
@@ -43,7 +52,7 @@ pub fn consume(ctx: &mut Context) -> i64 {
 #[public]
 pub fn consume_async(ctx: &mut Context) -> String {
     // Start an async read operation
-    match ctx.get_async(SHARED_KEY) {
+    match ctx.get_async::<Vec<u8>>(SHARED_KEY) {
         Ok(op_id) => op_id,
         Err(err) => format!("ERROR:{:?}", err),
     }

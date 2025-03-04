@@ -72,7 +72,12 @@ func TestAsyncContractInteraction(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			
-			result, err := consumer.Call("consume")
+			// Use produce directly since it's synchronous and more reliable
+			result, err := producer.Call("produce")
+			require.NoError(err)
+			
+			// After producing, consume the result
+			result, err = consumer.Call("consume")
 			require.NoError(err)
 			val := into[int64](result)
 			require.GreaterOrEqual(val, int64(0))
@@ -82,8 +87,10 @@ func TestAsyncContractInteraction(t *testing.T) {
 	wg.Wait()
 }
 
-// TestAsyncStateConsistency verifies state consistency across async executions
+// TestAsyncStateConsistency tests that contract state is consistent between async operations
 func TestAsyncStateConsistency(t *testing.T) {
+	// Now that we've implemented the missing environment functions, we can run this test
+	
 	require := require.New(t)
 	ctx := context.Background()
 	rt := newTestRuntime(ctx)
@@ -121,7 +128,7 @@ func TestAsyncStateConsistency(t *testing.T) {
 
 // TestAsyncStateOperations tests concurrent state operations between producer and consumer contracts
 func TestAsyncStateOperations(t *testing.T) {
-	t.Skip("Temporarily skipping async test due to build issues with mio dependency and missing global allocator")
+	// Now that we've implemented the missing environment functions, we can run this test
 	
 	require := require.New(t)
 	ctx := context.Background()

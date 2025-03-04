@@ -4,10 +4,29 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
+	"math/rand"
+	"slices"
+	"strconv"
+	"sync"
+	"sync/atomic"
+
 	"github.com/bytecodealliance/wasmtime-go/v25"
 	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slices"
+)
+
+// Global variables for async operation storage
+var (
+	// Counter for generating operation IDs
+	opCounter int64 = 0
+	
+	// Storage for async operation results
+	// Structure: map[opID]map[key]value
+	asyncStorage = make(map[int64]map[string][]byte)
+	
+	// Mutex for thread safety
+	asyncStoreMutex sync.Mutex
 )
 
 var nilResult = []wasmtime.Val{wasmtime.ValI32(0)}
@@ -126,8 +145,10 @@ type HostFunctionType interface {
 	call(*CallInfo, *wasmtime.Caller, []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap)
 }
 
-var typeI32 = wasmtime.NewValType(wasmtime.KindI32)
-var typeI64 = wasmtime.NewValType(wasmtime.KindI64)
+var (
+	typeI32 = wasmtime.NewValType(wasmtime.KindI32)
+	typeI64 = wasmtime.NewValType(wasmtime.KindI64)
+)
 
 type Function[T any, U any] func(*CallInfo, T) (U, error)
 
@@ -177,7 +198,7 @@ func getInputFromMemory[T any](caller *wasmtime.Caller, vals []wasmtime.Val) (*T
 	if offset == 0 || length == 0 {
 		return new(T), nil
 	}
-	return Deserialize[T](caller.GetExport(MemoryName).Memory().UnsafeData(caller)[offset : offset+length])
+	return Deserialize[T](caller.GetExport("memory").Memory().UnsafeData(caller)[offset : offset+length])
 }
 
 func writeOutputToMemory[T any](callInfo *CallInfo, results T, err error) ([]wasmtime.Val, *wasmtime.Trap) {
@@ -200,6 +221,19 @@ func functionFromWasmVals(f func(store *wasmtime.Store, callInfo *CallInfo, args
 	return &directWasmValsFunc{f: f}
 }
 
+// functionFromWasmValsWithType is a helper to create a HostFunctionType with a specific type signature
+func functionFromWasmValsWithType(
+	f func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error),
+	params []*wasmtime.ValType,
+	results []*wasmtime.ValType,
+) HostFunctionType {
+	return &directWasmValsWithTypeFunc{
+		f:      f,
+		params: params,
+		results: results,
+	}
+}
+
 // directWasmValsFunc implements HostFunctionType for functions that directly handle wasmtime.Val values
 type directWasmValsFunc struct {
 	f func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error)
@@ -211,6 +245,25 @@ func (f *directWasmValsFunc) wasmType() *wasmtime.FuncType {
 }
 
 func (f *directWasmValsFunc) call(callInfo *CallInfo, caller *wasmtime.Caller, args []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap) {
+	// Use the store directly from callInfo
+	res, err := f.f(callInfo.inst.store, callInfo, args)
+	if err != nil {
+		return nilResult, convertToTrap(err)
+	}
+	return res, nil
+}
+
+type directWasmValsWithTypeFunc struct {
+	f      func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error)
+	params []*wasmtime.ValType
+	results []*wasmtime.ValType
+}
+
+func (f *directWasmValsWithTypeFunc) wasmType() *wasmtime.FuncType {
+	return wasmtime.NewFuncType(f.params, f.results)
+}
+
+func (f *directWasmValsWithTypeFunc) call(callInfo *CallInfo, caller *wasmtime.Caller, args []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap) {
 	// Use the store directly from callInfo
 	res, err := f.f(callInfo.inst.store, callInfo, args)
 	if err != nil {
@@ -245,7 +298,7 @@ func NewEnvModule() *ImportModule {
 					length := args[1].I32()
 					
 					// Get memory and read bytes
-					mem := callInfo.inst.inst.GetExport(store, MemoryName).Memory()
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
 					data := mem.UnsafeData(store)[ptr:ptr+length]
 					
 					// Clone the bytes to avoid issues if the WebAssembly memory is reused
@@ -255,19 +308,294 @@ func NewEnvModule() *ImportModule {
 					return nil, nil
 				}),
 			},
-			"get_call_value": {
-				FuelCost: 10, // Low fuel cost for a simple getter
-				Function: &simpleValueFunc{
-					typeFunc: func() *wasmtime.FuncType {
-						// Function type for get_call_value: func() -> i64
-						return wasmtime.NewFuncType([]*wasmtime.ValType{}, []*wasmtime.ValType{typeI64})
-					},
-					callFunc: func(callInfo *CallInfo, caller *wasmtime.Caller, args []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap) {
-						// Return the Value field from the CallInfo struct
-						return []wasmtime.Val{wasmtime.ValI64(int64(callInfo.Value))}, nil
-					},
-				},
+			"get_state": {
+				FuelCost: 50, // Medium cost for state access
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract key pointer and length
+					keyPtr := args[0].I32()
+					keyLen := args[1].I32()
+					
+					// Get memory and read key bytes
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					keyData := mem.UnsafeData(store)[keyPtr:keyPtr+keyLen]
+					
+					// Get state from storage
+					ctx := context.Background()
+					stateObj := callInfo.State.GetContractState(callInfo.Contract)
+					value, err := stateObj.GetValue(ctx, keyData)
+					
+					if err != nil {
+						// Return -1 to indicate error
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					if value == nil {
+						// Return 0 to indicate key not found
+						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+					}
+					
+					// Store value in result buffer and return success
+					valueLen := int32(len(value))
+					callInfo.inst.result = slices.Clone(value)
+					
+					return []wasmtime.Val{wasmtime.ValI32(valueLen)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"get_value": {
+				FuelCost: 10, // Low cost for simple memory copying
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract destination pointer and capacity
+					resultPtr := args[0].I32()
+					capacity := args[1].I32()
+					
+					// Check if we have a result to return
+					if callInfo.inst.result == nil {
+						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+					}
+					
+					// Get memory
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					
+					// Calculate how much data we can copy
+					valueLen := int32(len(callInfo.inst.result))
+					copyLen := valueLen
+					if copyLen > capacity {
+						copyLen = capacity
+					}
+					
+					// Copy result to destination
+					copy(mem.UnsafeData(store)[resultPtr:resultPtr+copyLen], callInfo.inst.result[:copyLen])
+					
+					// Return actual length
+					return []wasmtime.Val{wasmtime.ValI32(copyLen)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"store_state": {
+				FuelCost: 100, // Higher cost for state writes
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract key pointer and length
+					keyPtr := args[0].I32()
+					keyLen := args[1].I32()
+					
+					// Extract value pointer and length
+					valuePtr := args[2].I32()
+					valueLen := args[3].I32()
+					
+					// Get memory and read key and value bytes
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					keyBytes := mem.UnsafeData(store)[keyPtr:keyPtr+keyLen]
+					valueBytes := mem.UnsafeData(store)[valuePtr:valuePtr+valueLen]
+					
+					// Store in state
+					ctx := context.Background()
+					stateObj := callInfo.State.GetContractState(callInfo.Contract)
+					err := stateObj.Insert(ctx, keyBytes, valueBytes)
+					
+					if err != nil {
+						// Return -1 to indicate error
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					// Return 0 to indicate success (this matches the Rust contract's expectation)
+					return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32, typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"generate_operation_id": {
+				FuelCost: 5, // Low cost
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Generate an operation ID (using atomic counter)
+					opID := atomic.AddInt64(&opCounter, 1)
+					
+					// Convert to a string representation (hex format)
+					idStr := fmt.Sprintf("%016x", opID)
+					
+					// Copy ID string to memory and return pointer
+					ptr, err := copyBytesToMemory(store, callInfo, []byte(idStr))
+					if err != nil {
+						// Return -1 to indicate error
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					// Return pointer to the operation ID in memory
+					return []wasmtime.Val{wasmtime.ValI32(ptr)}, nil
+				}, []*wasmtime.ValType{}, []*wasmtime.ValType{typeI32}),
+			},
+			"store_async": {
+				FuelCost: 10, // Async operations have lower immediate cost
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract key pointer and length
+					keyPtr := args[0].I32()
+					keyLen := args[1].I32()
+					
+					// Extract value pointer and length
+					valuePtr := args[2].I32()
+					valueLen := args[3].I32()
+					
+					// Get memory and read key and value bytes
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					keyBytes := mem.UnsafeData(store)[keyPtr:keyPtr+keyLen]
+					valueBytes := mem.UnsafeData(store)[valuePtr:valuePtr+valueLen]
+					
+					// Generate an operation ID
+					opID := atomic.AddInt64(&opCounter, 1)
+					
+					// Store in async storage
+					asyncStoreMutex.Lock()
+					defer asyncStoreMutex.Unlock()
+					
+					if asyncStorage[opID] == nil {
+						asyncStorage[opID] = make(map[string][]byte)
+					}
+					
+					// Store key-value pair
+					asyncStorage[opID][string(keyBytes)] = slices.Clone(valueBytes)
+					
+					// Return 0 to indicate success
+					return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32, typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"check_async_operation": {
+				FuelCost: 5, // Low cost for checking status
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract operation ID pointer and length
+					opIdPtr := args[0].I32()
+					opIdLen := args[1].I32()
+					
+					// Get memory and read operation ID
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					opIdBytes := mem.UnsafeData(store)[opIdPtr:opIdPtr+opIdLen]
+					
+					// Parse operation ID
+					opIdStr := string(opIdBytes)
+					opId, err := strconv.ParseInt(opIdStr, 16, 64)
+					if err != nil {
+						// Return 0 to indicate operation not found
+						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+					}
+					
+					// Check if operation exists and is complete
+					asyncStoreMutex.Lock()
+					defer asyncStoreMutex.Unlock()
+					
+					// Check if operation exists and has results
+					if _, exists := asyncStorage[opId]; exists {
+						// Return 1 to indicate operation exists and is complete
+						return []wasmtime.Val{wasmtime.ValI32(1)}, nil
+					}
+					
+					// Return 0 to indicate operation not found or not complete
+					return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"get_async_result": {
+				FuelCost: 5, // Low cost for retrieving a result
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract operation ID pointer and length
+					opIdPtr := args[0].I32()
+					opIdLen := args[1].I32()
+					
+					// Get memory and read operation ID
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					opIdBytes := mem.UnsafeData(store)[opIdPtr:opIdPtr+opIdLen]
+					
+					// Parse operation ID
+					opIdStr := string(opIdBytes)
+					opId, err := strconv.ParseInt(opIdStr, 16, 64)
+					if err != nil {
+						// Return -1 to indicate error
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					// Check if operation exists and has results
+					asyncStoreMutex.Lock()
+					defer asyncStoreMutex.Unlock()
+					
+					if asyncStorage[opId] == nil {
+						// Operation not found
+						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+					}
+					
+					// Convert key to string for lookup
+					keyPtr := args[2].I32()
+					keyLen := args[3].I32()
+					
+					// Get memory and read key
+					mem = callInfo.inst.inst.GetExport(store, "memory").Memory()
+					keyBytes := mem.UnsafeData(store)[keyPtr:keyPtr+keyLen]
+					keyStr := string(keyBytes)
+					
+					// Look up the value for the specific key
+					resultBytes, exists := asyncStorage[opId][keyStr]
+					if !exists || len(resultBytes) == 0 {
+						// No result for this key
+						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+					}
+					
+					// Copy result to memory
+					resultPtr, err := copyBytesToMemory(store, callInfo, resultBytes)
+					if err != nil {
+						// Return -1 to indicate error
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					// Return pointer to result
+					return []wasmtime.Val{wasmtime.ValI32(resultPtr)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32, typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"random_bytes": {
+				FuelCost: 30, // Medium cost for generating random data
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract pointer and length
+					ptr := args[0].I32()
+					length := args[1].I32()
+					
+					// Get memory
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					
+					// Generate deterministic random bytes based on operation counter
+					// This is deterministic to ensure reproducibility in tests
+					randomSource := rand.New(rand.NewSource(atomic.LoadInt64(&opCounter)))
+					randomBytes := make([]byte, length)
+					_, err := randomSource.Read(randomBytes)
+					if err != nil {
+						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+					}
+					
+					// Copy to WebAssembly memory
+					copy(mem.UnsafeData(store)[ptr:ptr+length], randomBytes)
+					
+					// Return the length of random bytes
+					return []wasmtime.Val{wasmtime.ValI32(int32(length))}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
 			},
 		},
 	}
+}
+
+// copyBytesToMemory copies bytes to WebAssembly memory and returns the pointer
+func copyBytesToMemory(store *wasmtime.Store, callInfo *CallInfo, data []byte) (int32, error) {
+	// Get memory export
+	mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+	if mem == nil {
+		return -1, fmt.Errorf("memory export not found")
+	}
+	
+	// Get alloc function
+	allocFn := callInfo.inst.inst.GetExport(store, "alloc").Func()
+	if allocFn == nil {
+		return -1, fmt.Errorf("allocation function not found")
+	}
+	
+	// Allocate memory in WebAssembly
+	dataOffsetIntf, err := allocFn.Call(store, int32(len(data)))
+	if err != nil {
+		return -1, err
+	}
+	dataOffset := dataOffsetIntf.(int32)
+	
+	// Copy data to WebAssembly memory
+	linearMem := mem.UnsafeData(store)
+	copy(linearMem[dataOffset:dataOffset+int32(len(data))], data)
+	
+	return dataOffset, nil
 }
