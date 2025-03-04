@@ -151,6 +151,14 @@ impl HostPtr {
     }
 }
 
+/// Read data from memory at the given address and convert it to a memory-owned vec
+pub fn read_memory(addr: u64) -> HostPtr {
+    if addr == 0 {
+        return HostPtr::null();
+    }
+    HostPtr::from_raw(addr as *const u8)
+}
+
 #[cfg(feature = "test")]
 mod tests {
     use super::*;

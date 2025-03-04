@@ -33,6 +33,12 @@ pub enum Error {
     /// IO error
     #[error("IO error")]
     Io,
+    /// Invalid argument provided
+    #[error("Invalid argument")]
+    InvalidArgument,
+    /// Invalid data format
+    #[error("Invalid data")]
+    InvalidData,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -48,6 +54,10 @@ pub enum Error {
     Serialization(String),
     /// IO error
     Io,
+    /// Invalid argument provided
+    InvalidArgument,
+    /// Invalid data format
+    InvalidData,
 }
 
 impl From<String> for Error {
