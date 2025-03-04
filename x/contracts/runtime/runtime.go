@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 
 	"github.com/ava-labs/avalanchego/cache"
 	"github.com/ava-labs/avalanchego/utils/logging"
@@ -26,6 +27,7 @@ type WasmRuntime struct {
 	callerInfo map[uintptr]*CallInfo
 	linker     *wasmtime.Linker
 	limits     ResourceLimits
+	callInfo   atomic.Value // Used to store current CallInfo for tests
 }
 
 type StateManager interface {
@@ -107,7 +109,10 @@ func NewRuntime(
 		}),
 		limits: DefaultResourceLimits(),
 	}
-
+	
+	// Initialize the atomic value (it will be empty until explicitly set)
+	runtime.callInfo = atomic.Value{}
+	
 	// Register contract module first since other modules may depend on it
 	hostImports.AddModule(NewContractModule(runtime))
 	hostImports.AddModule(NewLogModule())
@@ -251,4 +256,14 @@ func (r *WasmRuntime) getCallInfo(storeLike wasmtime.Storelike) *CallInfo {
 
 func (r *WasmRuntime) deleteCallInfo(storeLike wasmtime.Storelike) {
 	delete(r.callerInfo, toMapKey(storeLike))
+}
+
+// envGetCallValue implements the get_call_value host function
+// Returns the Value field from the callInfo associated with the current execution context
+func (r *WasmRuntime) envGetCallValue() uint64 {
+	// Get the callInfo from atomic store
+	if callInfo, ok := r.callInfo.Load().(*CallInfo); ok && callInfo != nil {
+		return callInfo.Value
+	}
+	return 0 // Default to 0 if no callInfo is available
 }

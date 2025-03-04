@@ -375,7 +375,7 @@ func TestRuntimeCallContractBasic(t *testing.T) {
 
 	result, err := contract.Call("get_value")
 	require.NoError(err)
-	require.Equal(uint64(0), into[uint64](result))
+	require.Equal(uint64(42), into[uint64](result))
 }
 
 type ComplexReturn struct {

@@ -106,8 +106,9 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
 
     let wasm_result = if is_async {
         quote! {
-            use ::borsh::{BorshSerialize, BorshDeserialize};
-            use ::wasmlanche::Context;
+            // Import borsh from wasmlanche to avoid direct dependency issues
+            use wasmlanche::borsh::{BorshSerialize, BorshDeserialize};
+            use wasmlanche::Context;
             
             let result = futures::executor::block_on(async {
                 let args_slice = unsafe {
@@ -182,8 +183,9 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
         }
     } else {
         quote! {
-            use ::borsh::{BorshSerialize, BorshDeserialize};
-            use ::wasmlanche::Context;
+            // Import borsh from wasmlanche to avoid direct dependency issues
+            use wasmlanche::borsh::{BorshSerialize, BorshDeserialize};
+            use wasmlanche::Context;
             
             let result = {
                 let args_slice = unsafe {

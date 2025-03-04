@@ -11,19 +11,24 @@ use sdk_macros::public;
 use wasmlanche::Context;
 
 #[public]
+pub fn fail(_ctx: &mut Context) -> i64 {
+    panic!("Simulated contract failure");
+}
+
+#[public]
 pub fn get_value(ctx: &mut Context) -> i64 {
-    // For TestRuntimeCallContractBasicAttachValue test - return 0 when value is attached
+    // Access the value from contract call context
     if ctx.value() > 0 {
-        0
+        // Return the actual value that was attached
+        ctx.value() as i64
     } else {
-        // Return 42 for other cases
-        42
+        0
     }
 }
 
 #[public]
 pub async fn get_value_async(_ctx: &mut Context) -> i64 {
-    84
+    42
 }
 
 // Define panic handler only when not using futures_executor feature

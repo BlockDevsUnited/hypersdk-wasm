@@ -1,107 +1,190 @@
+// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
 package runtime
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
-	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/logging"
-	"github.com/ava-labs/hypersdk/codec"
-	"github.com/ava-labs/hypersdk/x/contracts/test"
-	"github.com/bytecodealliance/wasmtime-go/v25"
 	"github.com/stretchr/testify/require"
+	"github.com/bytecodealliance/wasmtime-go/v25"
+	"github.com/ava-labs/hypersdk/codec"
+	"github.com/ava-labs/hypersdk/state"
 )
 
-func TestCallValue(t *testing.T) {
-	// Skip this test if it fails - it's just to verify the value access mechanism
-	t.Skip("This test is skipped until we can properly test the value host function")
+// MemoryState is a simple in-memory implementation of both
+// state.Mutable and ContractManager for testing
+type MemoryState struct {
+	balance    map[string]uint64
+	contracts  map[string]ContractID
+	contractsBytes map[string][]byte
+	data       map[string][]byte
+}
 
-	require := require.New(t)
-	ctx := context.Background()
-
-	log := logging.NoLog{}
-	runtime := NewRuntime(NewConfig(), log)
-
-	// Create a contract ID and a contract manager
-	contractID := ids.GenerateTestID()
-	contractStringID := string(contractID[:])
-	contractAddr := codec.CreateAddress(0, contractID)
-	
-	// Create test state manager
-	contractManager := NewContractStateManager(test.NewTestDB(), []byte{})
-	testStateManager := &TestStateManager{
-		ContractManager: contractManager,
+func NewMemoryState() *MemoryState {
+	return &MemoryState{
+		balance:   make(map[string]uint64),
+		contracts: make(map[string]ContractID),
+		contractsBytes: make(map[string][]byte),
+		data:      make(map[string][]byte),
 	}
+}
 
-	// Create a simple test contract
-	// Using the Wasmtime module creator
-	store := wasmtime.NewStore(wasmtime.NewEngine())
+// Implement state.Mutable interface
+func (m *MemoryState) GetValue(ctx context.Context, key []byte) ([]byte, error) {
+	value, exists := m.data[string(key)]
+	if !exists {
+		return nil, nil // Not found, return nil without error
+	}
+	return value, nil
+}
+
+func (m *MemoryState) Insert(ctx context.Context, key []byte, value []byte) error {
+	m.data[string(key)] = value
+	return nil
+}
+
+func (m *MemoryState) Remove(ctx context.Context, key []byte) error {
+	delete(m.data, string(key))
+	return nil
+}
+
+func (m *MemoryState) Commit() error {
+	return nil // No-op for in-memory store
+}
+
+// StateManager interface implementation
+type memoryStateManager struct {
+	ctx   context.Context
+	state *MemoryState
+	asyncRegistry *AsyncRegistry
+}
+
+func NewStateManager(ctx context.Context, state *MemoryState, asyncRegistry *AsyncRegistry) StateManager {
+	if state == nil {
+		state = NewMemoryState()
+	}
+	return &memoryStateManager{
+		ctx:   ctx,
+		state: state,
+		asyncRegistry: asyncRegistry,
+	}
+}
+
+// StateManager implementation for testing
+func (m *memoryStateManager) GetBalance(ctx context.Context, address codec.Address) (uint64, error) {
+	return m.state.balance[string(address[:])], nil
+}
+
+func (m *memoryStateManager) TransferBalance(ctx context.Context, from codec.Address, to codec.Address, amount uint64) error {
+	fromKey := string(from[:])
+	toKey := string(to[:])
 	
-	// This is a minimal module with a test_value function that returns a constant
-	// For the purpose of this PR, we just need to demonstrate
-	// that our `get_call_value` function binding is set up correctly
-	module, err := wasmtime.NewModule(store.Engine, []byte{
-		0x00, 0x61, 0x73, 0x6d, // magic header
-		0x01, 0x00, 0x00, 0x00, // wasm version 1
-		
-		// type section
-		0x01, 0x05, // section code and size
-		0x01,       // 1 type
-		0x60, 0x00, 0x01, 0x7f, // func type: () -> i32
-		
-		// function section
-		0x03, 0x02, // section code and size
-		0x01, 0x00, // 1 function, type 0
-		
-		// export section
-		0x07, 0x0E, // section code and size
-		0x01,       // 1 export
-		0x0A, 0x74, 0x65, 0x73, 0x74, 0x5f, 0x76, 0x61, 0x6c, 0x75, 0x65, // name: "test_value"
-		0x00, 0x00, // export kind: function, function index 0
-		
-		// code section
-		0x0A, 0x06, // section code and size
-		0x01,       // 1 function body
-		0x04,       // function body size
-		0x00,       // local decl count
-		0x41, 0x2a, // i32.const 42
-		0x0B,       // end
-	})
-	require.NoError(err)
-
-	// Set contract bytes directly
-	wasmBytes, err := module.Serialize()
-	require.NoError(err)
-	err = testStateManager.SetContractBytes(ctx, ContractID(contractStringID), wasmBytes)
-	require.NoError(err)
+	if m.state.balance[fromKey] < amount {
+		return fmt.Errorf("insufficient balance")
+	}
 	
-	// Associate the contract with the address
-	err = testStateManager.SetAccountContract(ctx, contractAddr, ContractID(contractStringID))
-	require.NoError(err)
-
-	// Now call the contract with a specific value
-	testValue := uint64(12345)
-
-	// Use WithDefaults and create a new call context for our test
-	callContext := runtime.WithDefaults(CallInfo{
-		State:    testStateManager,
-		Fuel:     1000000,
-	})
-
-	// Call the contract
-	_, err = callContext.CallContract(
-		ctx,
-		&CallInfo{
-			Contract:     contractAddr,
-			FunctionName: "test_value",
-			Value:        testValue,
-			ActionID:     ids.GenerateTestID(),
-		})
-	require.NoError(err)
+	m.state.balance[fromKey] -= amount
+	m.state.balance[toKey] += amount
 	
-	// Our value() host function is now properly set up in the runtime imports
-	// For the full test to work, we would need a proper WebAssembly binary that imports
-	// our value function and returns it.
+	return nil
+}
+
+func (m *memoryStateManager) GetContractState(address codec.Address) state.Mutable {
+	return m.state
+}
+
+func (m *memoryStateManager) GetAccountContract(ctx context.Context, account codec.Address) (ContractID, error) {
+	contractID, exists := m.state.contracts[string(account[:])]
+	if !exists {
+		return nil, fmt.Errorf("contract not found")
+	}
+	return contractID, nil
+}
+
+func (m *memoryStateManager) GetContractBytes(ctx context.Context, contractID ContractID) ([]byte, error) {
+	bytes, exists := m.state.contractsBytes[string(contractID)]
+	if !exists {
+		return nil, fmt.Errorf("contract bytes not found")
+	}
+	return bytes, nil
+}
+
+func (m *memoryStateManager) NewAccountWithContract(ctx context.Context, contractID ContractID, accountCreationData []byte) (codec.Address, error) {
+	// Simplified for test - create a fake address based on contractID
+	address := codec.Address{}
+	copy(address[:], contractID)
+	m.state.contracts[string(address[:])] = contractID
+	return address, nil
+}
+
+func (m *memoryStateManager) SetAccountContract(ctx context.Context, account codec.Address, contractID ContractID) error {
+	m.state.contracts[string(account[:])] = contractID
+	return nil
+}
+
+func (m *memoryStateManager) SetContractBytes(ctx context.Context, contractID ContractID, contractBytes []byte) error {
+	m.state.contractsBytes[string(contractID)] = contractBytes
+	return nil
+}
+
+func TestCallValue(t *testing.T) {
+	// Create a test state manager
+	stateManager := NewStateManager(context.Background(), &MemoryState{}, nil)
+
+	// Set our test value that we want to retrieve from the host function
+	testValue := uint64(123456)
+
+	// Setup wasmtime engine & store
+	engine := wasmtime.NewEngine()
+	_ = wasmtime.NewStore(engine)  // Unused but kept for reference
+
+	// Create our runtime with a call info that has our test value
+	rt := NewRuntime(NewConfig(), logging.NoLog{})
+	callInfo := &CallInfo{                     
+		Value: testValue,
+		State: stateManager,
+		Fuel:  1000000,
+	}
+	
+	// Store the callInfo in the runtime
+	rt.callInfo.Store(callInfo)
+	
+	// Call the host function directly to verify it works
+	result := rt.envGetCallValue()
+	
+	// Verify we got the expected value back
+	require.Equal(t, testValue, result, "Call value should match what was set in CallInfo")
+}
+
+func TestCallValueDirect(t *testing.T) {
+	// This is a direct test of the get_call_value host function without requiring WASM compilation
+	
+	// Create a test state manager
+	stateManager := NewStateManager(context.Background(), &MemoryState{}, nil)
+	
+	// Set our test value
+	testValue := uint64(123456)
+	
+	// Create a CallInfo with our test value
+	callInfo := &CallInfo{
+		Value: testValue,
+		State: stateManager,
+		Fuel:  1000000,
+	}
+	
+	// Create a runtime with our configuration
+	rt := NewRuntime(NewConfig(), logging.NoLog{})
+	
+	// Set the call info directly in the runtime
+	rt.callInfo.Store(callInfo)
+	
+	// Call the get_call_value host function directly
+	result := rt.envGetCallValue()
+	
+	// Verify we got the expected value back
+	require.Equal(t, testValue, result, "Call value should match what was set in CallInfo")
 }

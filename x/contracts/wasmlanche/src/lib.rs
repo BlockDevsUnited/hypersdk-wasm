@@ -8,11 +8,11 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "futures_executor")))]
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-#[cfg(all(target_arch = "wasm32", not(feature = "std")))]
+#[cfg(all(target_arch = "wasm32", not(feature = "std"), not(feature = "futures_executor")))]
 #[alloc_error_handler]
 fn alloc_error(_: core::alloc::Layout) -> ! {
     core::panic!("memory allocation error")
