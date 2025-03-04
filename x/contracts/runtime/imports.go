@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/bytecodealliance/wasmtime-go/v25"
 	"golang.org/x/exp/maps"
+	"golang.org/x/exp/slices"
 )
 
 var nilResult = []wasmtime.Val{wasmtime.ValI32(0)}
@@ -191,4 +192,55 @@ func writeOutputToMemory[T any](callInfo *CallInfo, results T, err error) ([]was
 		return nilResult, convertToTrap(err)
 	}
 	return []wasmtime.Val{wasmtime.ValI32(offset)}, nil
+}
+
+// functionFromWasmVals is a helper to create a HostFunctionType from a function that directly handles wasmtime.Val values
+func functionFromWasmVals(f func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error)) HostFunctionType {
+	return &directWasmValsFunc{f: f}
+}
+
+// directWasmValsFunc implements HostFunctionType for functions that directly handle wasmtime.Val values
+type directWasmValsFunc struct {
+	f func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error)
+}
+
+func (f *directWasmValsFunc) wasmType() *wasmtime.FuncType {
+	// Function type for set_call_result: func(i32, i32) -> void (no return value)
+	return wasmtime.NewFuncType([]*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{})
+}
+
+func (f *directWasmValsFunc) call(callInfo *CallInfo, caller *wasmtime.Caller, args []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap) {
+	// Use the store directly from callInfo
+	res, err := f.f(callInfo.inst.store, callInfo, args)
+	if err != nil {
+		return nilResult, convertToTrap(err)
+	}
+	return res, nil
+}
+
+// Creates a new environment module with basic functions
+func NewEnvModule() *ImportModule {
+	return &ImportModule{
+		Name: "env",
+		HostFunctions: map[string]HostFunction{
+			"set_call_result": {
+				FuelCost: 100, 
+				Function: functionFromWasmVals(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract pointer and length from arguments
+					ptr := args[0].I32()
+					length := args[1].I32()
+					
+					// Get memory and read bytes
+					mem := callInfo.inst.inst.GetExport(store, MemoryName).Memory()
+					data := mem.UnsafeData(store)[ptr:ptr+length]
+					
+					// Clone the bytes to avoid issues if the WebAssembly memory is reused
+					callInfo.inst.result = slices.Clone(data)
+					
+					// No return value for this function
+					return nil, nil
+				}),
+			},
+		},
+	}
 }

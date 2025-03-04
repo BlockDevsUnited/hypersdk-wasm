@@ -122,11 +122,12 @@ pub use bytemuck;
 /// Allocates memory in the WebAssembly linear memory.
 /// This function is exported for use by the generated code.
 #[no_mangle]
-pub extern "C" fn allocate(size: u32) -> *mut u8 {
-    // Extract the raw pointer and convert it to mutable
+pub extern "C" fn allocate(size: u32) -> Option<core::ptr::NonNull<u8>> {
+    // Allocate memory and return a NonNull pointer
     let host_ptr = crate::memory::alloc(size as usize);
-    let ptr = host_ptr.as_ptr();
-    ptr as *mut u8
+    
+    // Convert the raw pointer to a NonNull<u8>
+    unsafe { core::ptr::NonNull::new(host_ptr.as_ptr() as *mut u8) }
 }
 
 #[cfg(test)]

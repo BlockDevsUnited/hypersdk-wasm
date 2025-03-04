@@ -113,6 +113,7 @@ func NewRuntime(
 	hostImports.AddModule(NewLogModule())
 	hostImports.AddModule(NewBalanceModule())
 	hostImports.AddModule(NewStateAccessModule())
+	hostImports.AddModule(NewEnvModule())
 
 	linker, err := hostImports.createLinker(runtime)
 	if err != nil {

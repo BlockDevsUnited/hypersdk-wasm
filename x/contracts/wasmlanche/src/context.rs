@@ -420,3 +420,10 @@ impl Default for Context {
         Self::new()
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+mod imports {
+    extern "C" {
+        pub fn set_call_result(ptr: *const u8, len: usize);
+    }
+}

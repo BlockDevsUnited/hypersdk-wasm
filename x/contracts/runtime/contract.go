@@ -154,14 +154,19 @@ func (p *ContractInstance) call(ctx context.Context, callInfo *CallInfo) ([]byte
 		return nil, err
 	}
 
-	function := p.inst.GetFunc(p.store, callInfo.FunctionName)
+	// WebAssembly exported functions use a wasm_ prefix
+	wasmFunctionName := "wasm_" + callInfo.FunctionName
+	function := p.inst.GetFunc(p.store, wasmFunctionName)
 	if function == nil {
-		return nil, fmt.Errorf("function %s does not exist", callInfo.FunctionName)
+		return nil, fmt.Errorf("function %s (wasm export: %s) does not exist", callInfo.FunctionName, wasmFunctionName)
 	}
 	_, err = function.Call(p.store, paramsOffset)
 	if err != nil {
 		return nil, err
 	}
+
+	// Add debug logging to print the raw result bytes
+	fmt.Printf("DEBUG: Result bytes (len=%d): %v\n", len(p.result), p.result)
 
 	return p.result, nil
 }
