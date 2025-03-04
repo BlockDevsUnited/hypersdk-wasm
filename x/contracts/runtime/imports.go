@@ -23,13 +23,37 @@ var (
 	
 	// Storage for async operation results
 	// Structure: map[opID]map[key]value
-	asyncStorage = make(map[int64]map[string][]byte)
+	asyncStorage     = make(map[int64]map[string][]byte)
+	asyncStoreMutex  sync.RWMutex
 	
-	// Mutex for thread safety
-	asyncStoreMutex sync.Mutex
+	// Create a more granular locking mechanism for async storage
+	asyncStorageMutexes = make(map[int64]*sync.RWMutex)
+	asyncStorageMutexesLock sync.Mutex
+	
+	// Result buffer for functions that return data
+	nilResult = []wasmtime.Val{wasmtime.ValI32(0)}
 )
 
-var nilResult = []wasmtime.Val{wasmtime.ValI32(0)}
+// getAsyncStorageLock returns a lock for a specific operation ID
+func getAsyncStorageLock(opID int64) *sync.RWMutex {
+	asyncStorageMutexesLock.Lock()
+	defer asyncStorageMutexesLock.Unlock()
+	
+	lock, exists := asyncStorageMutexes[opID]
+	if !exists {
+		lock = &sync.RWMutex{}
+		asyncStorageMutexes[opID] = lock
+	}
+	return lock
+}
+
+// removeAsyncStorageLock removes a lock for a specific operation ID
+func removeAsyncStorageLock(opID int64) {
+	asyncStorageMutexesLock.Lock()
+	defer asyncStorageMutexesLock.Unlock()
+	
+	delete(asyncStorageMutexes, opID)
+}
 
 type Imports struct {
 	Modules map[string]*ImportModule
@@ -440,8 +464,9 @@ func NewEnvModule() *ImportModule {
 					opID := atomic.AddInt64(&opCounter, 1)
 					
 					// Store in async storage
-					asyncStoreMutex.Lock()
-					defer asyncStoreMutex.Unlock()
+					lock := getAsyncStorageLock(opID)
+					lock.Lock()
+					defer lock.Unlock()
 					
 					if asyncStorage[opID] == nil {
 						asyncStorage[opID] = make(map[string][]byte)
@@ -474,8 +499,9 @@ func NewEnvModule() *ImportModule {
 					}
 					
 					// Check if operation exists and is complete
-					asyncStoreMutex.Lock()
-					defer asyncStoreMutex.Unlock()
+					lock := getAsyncStorageLock(opId)
+					lock.RLock()
+					defer lock.RUnlock()
 					
 					// Check if operation exists and has results
 					if _, exists := asyncStorage[opId]; exists {
@@ -488,59 +514,63 @@ func NewEnvModule() *ImportModule {
 				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
 			},
 			"get_async_result": {
-				FuelCost: 5, // Low cost for retrieving a result
+				FuelCost: 100,
 				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
-					// Extract operation ID pointer and length
-					opIdPtr := args[0].I32()
-					opIdLen := args[1].I32()
+					// Get async operation ID from arguments
+					opID := args[0].I32() 
+
+					// Get key from arguments (added to support key-based lookup)
+					keyPtr := args[1].I32()
+					keyLen := args[2].I32()
+					resultPtr := args[3].I32() 
 					
-					// Get memory and read operation ID
+					// Get memory and read key bytes
 					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
-					opIdBytes := mem.UnsafeData(store)[opIdPtr:opIdPtr+opIdLen]
+					data := mem.UnsafeData(store)
+					keyBuf := make([]byte, keyLen)
+					copy(keyBuf, data[keyPtr:keyPtr+keyLen])
+					key := string(keyBuf)
 					
-					// Parse operation ID
-					opIdStr := string(opIdBytes)
-					opId, err := strconv.ParseInt(opIdStr, 16, 64)
-					if err != nil {
-						// Return -1 to indicate error
-						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
-					}
+					// Lock for thread safety
+					lock := getAsyncStorageLock(int64(opID))
+					lock.RLock()
+					defer lock.RUnlock()
 					
-					// Check if operation exists and has results
-					asyncStoreMutex.Lock()
-					defer asyncStoreMutex.Unlock()
-					
-					if asyncStorage[opId] == nil {
-						// Operation not found
+					// Check if operation exists
+					opMap, exists := asyncStorage[int64(opID)] 
+					if !exists {
 						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
 					}
 					
-					// Convert key to string for lookup
-					keyPtr := args[2].I32()
-					keyLen := args[3].I32()
-					
-					// Get memory and read key
-					mem = callInfo.inst.inst.GetExport(store, "memory").Memory()
-					keyBytes := mem.UnsafeData(store)[keyPtr:keyPtr+keyLen]
-					keyStr := string(keyBytes)
-					
-					// Look up the value for the specific key
-					resultBytes, exists := asyncStorage[opId][keyStr]
-					if !exists || len(resultBytes) == 0 {
-						// No result for this key
+					// Check if key exists in operation map
+					value, keyExists := opMap[key]
+					if !keyExists {
 						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
 					}
 					
-					// Copy result to memory
-					resultPtr, err := copyBytesToMemory(store, callInfo, resultBytes)
-					if err != nil {
-						// Return -1 to indicate error
-						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					// Write value to memory at the provided resultPtr
+					data = mem.UnsafeData(store)
+					if (resultPtr + int32(len(value))) > int32(len(data)) {
+						return nilResult, fmt.Errorf("memory out of bounds")
 					}
+					copy(data[resultPtr:resultPtr+int32(len(value))], value)
 					
-					// Return pointer to result
-					return []wasmtime.Val{wasmtime.ValI32(resultPtr)}, nil
+					// Return success (length of the data written)
+					return []wasmtime.Val{wasmtime.ValI32(int32(len(value)))}, nil
 				}, []*wasmtime.ValType{typeI32, typeI32, typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"get_call_value": {
+				FuelCost: 10, // Low cost as it's just retrieving a value
+				Function: functionFromWasmValsWithType(
+					func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+						// Return the Value field from the CallInfo as an i64 value
+						return []wasmtime.Val{wasmtime.ValI64(int64(callInfo.Value))}, nil
+					},
+					// No input parameters
+					[]*wasmtime.ValType{},
+					// Return type is i64
+					[]*wasmtime.ValType{typeI64},
+				),
 			},
 			"random_bytes": {
 				FuelCost: 30, // Medium cost for generating random data
@@ -567,6 +597,68 @@ func NewEnvModule() *ImportModule {
 					// Return the length of random bytes
 					return []wasmtime.Val{wasmtime.ValI32(int32(length))}, nil
 				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"store_async_result": {
+				FuelCost: 50, // Medium cost for storing result
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract operation ID
+					opID := args[0].I32()
+					
+					// Extract key pointer and length
+					keyPtr := args[1].I32()
+					keyLen := args[2].I32()
+					
+					// Extract value pointer and length
+					valuePtr := args[3].I32()
+					valueLen := args[4].I32()
+					
+					// Get memory
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					data := mem.UnsafeData(store)
+					
+					// Read key and value from memory
+					keyBytes := data[keyPtr : keyPtr+keyLen]
+					valueBytes := data[valuePtr : valuePtr+valueLen]
+					
+					// Get or create a lock for this operation
+					opIDInt64 := int64(opID)
+					lock := getAsyncStorageLock(opIDInt64)
+					lock.Lock()
+					defer lock.Unlock()
+					
+					// Create operation map if it doesn't exist
+					if _, exists := asyncStorage[opIDInt64]; !exists {
+						asyncStorage[opIDInt64] = make(map[string][]byte)
+					}
+					
+					// Store the value with the key
+					asyncStorage[opIDInt64][string(keyBytes)] = slices.Clone(valueBytes)
+					
+					// Return 0 to indicate success
+					return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32, typeI32, typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
+			"clear_async_operation": {
+				FuelCost: 10, // Low cost for cleanup
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract operation ID
+					opID := args[0].I32()
+					opIDInt64 := int64(opID)
+					
+					// Get lock and clean up the operation
+					lock := getAsyncStorageLock(opIDInt64)
+					lock.Lock()
+					
+					// Remove the operation data
+					delete(asyncStorage, opIDInt64)
+					lock.Unlock()
+					
+					// Remove the lock itself from the map
+					removeAsyncStorageLock(opIDInt64)
+					
+					// Return 0 to indicate success
+					return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+				}, []*wasmtime.ValType{typeI32}, []*wasmtime.ValType{typeI32}),
 			},
 		},
 	}
