@@ -127,6 +127,7 @@ type HostFunctionType interface {
 }
 
 var typeI32 = wasmtime.NewValType(wasmtime.KindI32)
+var typeI64 = wasmtime.NewValType(wasmtime.KindI64)
 
 type Function[T any, U any] func(*CallInfo, T) (U, error)
 
@@ -218,6 +219,19 @@ func (f *directWasmValsFunc) call(callInfo *CallInfo, caller *wasmtime.Caller, a
 	return res, nil
 }
 
+type simpleValueFunc struct {
+	typeFunc func() *wasmtime.FuncType
+	callFunc func(*CallInfo, *wasmtime.Caller, []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap)
+}
+
+func (f *simpleValueFunc) wasmType() *wasmtime.FuncType {
+	return f.typeFunc()
+}
+
+func (f *simpleValueFunc) call(callInfo *CallInfo, caller *wasmtime.Caller, args []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap) {
+	return f.callFunc(callInfo, caller, args)
+}
+
 // Creates a new environment module with basic functions
 func NewEnvModule() *ImportModule {
 	return &ImportModule{
@@ -240,6 +254,19 @@ func NewEnvModule() *ImportModule {
 					// No return value for this function
 					return nil, nil
 				}),
+			},
+			"get_call_value": {
+				FuelCost: 10, // Low fuel cost for a simple getter
+				Function: &simpleValueFunc{
+					typeFunc: func() *wasmtime.FuncType {
+						// Function type for get_call_value: func() -> i64
+						return wasmtime.NewFuncType([]*wasmtime.ValType{}, []*wasmtime.ValType{typeI64})
+					},
+					callFunc: func(callInfo *CallInfo, caller *wasmtime.Caller, args []wasmtime.Val) ([]wasmtime.Val, *wasmtime.Trap) {
+						// Return the Value field from the CallInfo struct
+						return []wasmtime.Val{wasmtime.ValI64(int64(callInfo.Value))}, nil
+					},
+				},
 			},
 		},
 	}

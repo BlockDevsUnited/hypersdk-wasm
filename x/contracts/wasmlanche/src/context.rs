@@ -422,6 +422,19 @@ impl Default for Context {
 }
 
 #[cfg(target_arch = "wasm32")]
+impl Context {
+    /// Get the value attached to the current contract call.
+    pub fn value(&self) -> u64 {
+        extern "C" {
+            fn get_call_value() -> u64;
+        }
+        unsafe {
+            get_call_value()
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 mod imports {
     extern "C" {
         pub fn set_call_result(ptr: *const u8, len: usize);
