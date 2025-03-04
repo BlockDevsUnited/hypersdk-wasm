@@ -5,5 +5,5 @@ edition = "2021"
 
 [dependencies]
 borsh = "1.5.1"
-wasmlanche = { workspace = true, features = ["std"] }
+wasmlanche = { workspace = true, features = ["std", "simulator"] }
 wasmtime = "25.0"

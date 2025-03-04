@@ -11,4 +11,4 @@ wasmlanche = { workspace = true }
 sdk-macros = { workspace = true }
 
 [dev-dependencies]
-wasmlanche = { workspace = true, features = ["test"] }
+wasmlanche = { workspace = true, features = ["test", "simulator"] }

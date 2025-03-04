@@ -26,6 +26,7 @@ pub mod events;
 pub mod gas;
 pub mod host;
 pub mod memory;
+#[cfg(feature = "simulator")]
 pub mod simulator;
 pub mod state;
 pub mod types;
@@ -41,13 +42,13 @@ pub use crate::{
     types::WasmlAddress,
 };
 
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "simulator", feature = "std", not(target_arch = "wasm32")))]
 pub use crate::{
     simulator::Simulator,
     simulator::SimulatorImpl,
 };
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "simulator", target_arch = "wasm32"))]
 pub use crate::simulator::SimulatorImpl;
 
 pub const ID_LEN: usize = 32;

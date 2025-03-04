@@ -12,7 +12,9 @@ use alloc::{collections::BTreeMap, string::String, vec::Vec};
 #[cfg(feature = "std")]
 use std::collections::BTreeMap;
 
+#[cfg(all(feature = "simulator", feature = "std", not(target_arch = "wasm32")))]
 use core::future::Future;
+#[cfg(all(feature = "simulator", feature = "std", not(target_arch = "wasm32")))]
 use core::pin::Pin;
 use spin::RwLock;
 
@@ -23,10 +25,10 @@ use crate::{
     types::WasmlAddress,
 };
 
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "simulator", feature = "std", not(target_arch = "wasm32")))]
 use crate::simulator::{Simulator, SimulatorExt};
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "simulator", target_arch = "wasm32"))]
 use crate::simulator::Simulator;
 
 /// Host state for a contract
@@ -135,7 +137,7 @@ impl Host for HostImpl {
     }
 }
 
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "simulator", feature = "std", not(target_arch = "wasm32")))]
 #[async_trait::async_trait]
 impl SimulatorExt for HostImpl {
     fn get_balance_async<'a>(&'a self, _actor: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
@@ -191,6 +193,7 @@ impl SimulatorExt for HostImpl {
     }
 }
 
+#[cfg(feature = "simulator")]
 impl Simulator for HostImpl {
     fn get_balance(&self, account: &WasmlAddress) -> u64 {
         Host::get_balance(self, account)
