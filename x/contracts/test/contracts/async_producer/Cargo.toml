@@ -8,14 +8,15 @@ crate-type = ["cdylib"]
 
 [dependencies]
 sdk-macros = { path = "../../../sdk-macros" }
-wasmlanche = { workspace = true, default-features = false, features = ["bindings"] }
+wasmlanche = { path = "../../../wasmlanche", default-features = false, features = ["wasm"] }
+borsh = { version = "0.10.3", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wee_alloc = "0.4"
 
 [features]
-default = ["bindings"]
-bindings = []
+default = ["wasm"]
+wasm = []
 
 [profile.release]
 lto = true

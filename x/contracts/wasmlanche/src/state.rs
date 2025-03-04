@@ -1,5 +1,3 @@
-#![cfg_attr(not(feature = "std"), no_std)]
-
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
@@ -10,10 +8,14 @@ use alloc::{string::String, vec::Vec};
 use std::{string::String, vec::Vec};
 
 use borsh::{BorshDeserialize, BorshSerialize, maybestd};
+
+#[cfg(not(target_arch = "wasm32"))]
 use thiserror::Error;
+
+#[cfg(not(target_arch = "wasm32"))]
 use async_trait::async_trait;
 
-/// Error type for state operations
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Error)]
 pub enum Error {
     /// Error during serialization/deserialization
@@ -30,6 +32,21 @@ pub enum Error {
     Serialization(String),
     /// IO error
     #[error("IO error")]
+    Io,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug)]
+pub enum Error {
+    /// Error during serialization/deserialization
+    SerializationFailed,
+    /// Error accessing storage
+    StorageFailed,
+    /// State error
+    State(String),
+    /// Serialization error
+    Serialization(String),
+    /// IO error
     Io,
 }
 
@@ -51,11 +68,19 @@ pub trait StateKey: Default {
     fn key(&self) -> Vec<u8>;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
 pub trait StateAccess {
     async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error>;
     async fn get_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&self) -> Result<Option<S>, Error>;
     async fn delete_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&mut self) -> Result<Option<S>, Error>;
+}
+
+#[cfg(target_arch = "wasm32")]
+pub trait StateAccess {
+    fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), Error>;
+    fn get_state<S: BorshDeserialize + StateKey + Default>(&self) -> Result<Option<S>, Error>;
+    fn delete_state<S: BorshDeserialize + StateKey + Default>(&mut self) -> Result<Option<S>, Error>;
 }
 
 #[cfg(test)]
@@ -79,6 +104,7 @@ mod tests {
         state: Arc<RwLock<Option<Vec<u8>>>>,
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[async_trait]
     impl StateAccess for TestStateAccess {
         async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), Error> {
@@ -103,6 +129,41 @@ mod tests {
 
         async fn delete_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&mut self) -> Result<Option<S>, Error> {
             let mut state_guard = self.state.write().await;
+            match state_guard.take() {
+                Some(bytes) => {
+                    let state = BorshDeserialize::try_from_slice(&bytes)
+                        .map_err(|err| Error::SerializationFailed)?;
+                    Ok(Some(state))
+                }
+                None => Ok(None),
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl StateAccess for TestStateAccess {
+        fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), Error> {
+            let bytes = BorshSerialize::try_to_vec(state)
+                .map_err(|err| Error::SerializationFailed)?;
+            let mut state_guard = self.state.write().unwrap();
+            *state_guard = Some(bytes);
+            Ok(())
+        }
+
+        fn get_state<S: BorshDeserialize + StateKey + Default>(&self) -> Result<Option<S>, Error> {
+            let state_guard = self.state.read().unwrap();
+            match &*state_guard {
+                Some(bytes) => {
+                    let state = BorshDeserialize::try_from_slice(bytes)
+                        .map_err(|err| Error::SerializationFailed)?;
+                    Ok(Some(state))
+                }
+                None => Ok(None),
+            }
+        }
+
+        fn delete_state<S: BorshDeserialize + StateKey + Default>(&mut self) -> Result<Option<S>, Error> {
+            let mut state_guard = self.state.write().unwrap();
             match state_guard.take() {
                 Some(bytes) => {
                     let state = BorshDeserialize::try_from_slice(&bytes)

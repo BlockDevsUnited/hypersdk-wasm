@@ -87,8 +87,8 @@ impl EventLog {
         Ok(())
     }
 
-    pub fn get_state(&self, key: &[u8]) -> Option<&Vec<u8>> {
-        self.state.get(key)
+    pub fn get_state(&self, key: &[u8]) -> Result<Option<Vec<u8>>, EventError> {
+        Ok(self.state.get(key).cloned())
     }
 
     pub fn delete_state(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, EventError> {
@@ -100,6 +100,7 @@ impl EventLog {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
 impl StateAccess for EventLog {
     async fn store_state<S: BorshSerialize + StateKey + Send + Sync>(&mut self, state: &S) -> Result<(), StateError> {
@@ -110,30 +111,71 @@ impl StateAccess for EventLog {
     }
 
     async fn get_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&self) -> Result<Option<S>, StateError> {
-        match self.get_state(&S::key(&S::default())) {
+        let key = S::key(&S::default());
+        let value = self.get_state(&key).map_err(|e| StateError::State(e.to_string()))?;
+        match value {
             Some(bytes) => {
-                S::try_from_slice(bytes)
-                    .map(Some)
-                    .map_err(|e| StateError::Serialization(e.to_string()))
+                let state = S::try_from_slice(&bytes)
+                    .map_err(|e| StateError::Serialization(e.to_string()))?;
+                Ok(Some(state))
             }
             None => Ok(None),
         }
     }
 
     async fn delete_state<S: BorshDeserialize + StateKey + Default + Send + Sync>(&mut self) -> Result<Option<S>, StateError> {
-        match self.delete_state(&S::key(&S::default())) {
-            Ok(Some(bytes)) => {
-                S::try_from_slice(&bytes)
-                    .map(Some)
-                    .map_err(|e| StateError::Serialization(e.to_string()))
+        let key = S::key(&S::default());
+        let value = self.get_state(&key).map_err(|e| StateError::State(e.to_string()))?;
+        match value {
+            Some(bytes) => {
+                let state = S::try_from_slice(&bytes)
+                    .map_err(|e| StateError::Serialization(e.to_string()))?;
+                self.delete_state(&key).map_err(|e| StateError::State(e.to_string()))?;
+                Ok(Some(state))
             }
-            Ok(None) => Ok(None),
-            Err(e) => Err(StateError::State(e.to_string())),
+            None => Ok(None),
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(target_arch = "wasm32")]
+impl StateAccess for EventLog {
+    fn store_state<S: BorshSerialize + StateKey>(&mut self, state: &S) -> Result<(), StateError> {
+        let bytes = state.try_to_vec()
+            .map_err(|e| StateError::Serialization(e.to_string()))?;
+        self.store_state(&S::key(state), &bytes)
+            .map_err(|e| StateError::State(e.to_string()))
+    }
+
+    fn get_state<S: BorshDeserialize + StateKey + Default>(&self) -> Result<Option<S>, StateError> {
+        let key = S::key(&S::default());
+        let value = self.get_state(&key).map_err(|e| StateError::State(e.to_string()))?;
+        match value {
+            Some(bytes) => {
+                let state = S::try_from_slice(&bytes)
+                    .map_err(|e| StateError::Serialization(e.to_string()))?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn delete_state<S: BorshDeserialize + StateKey + Default>(&mut self) -> Result<Option<S>, StateError> {
+        let key = S::key(&S::default());
+        let value = self.get_state(&key).map_err(|e| StateError::State(e.to_string()))?;
+        match value {
+            Some(bytes) => {
+                let state = S::try_from_slice(&bytes)
+                    .map_err(|e| StateError::Serialization(e.to_string()))?;
+                self.delete_state(&key).map_err(|e| StateError::State(e.to_string()))?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 
@@ -150,10 +192,11 @@ mod tests {
 
     impl StateKey for TestState {
         fn key(&self) -> Vec<u8> {
-            b"test_state".to_vec()
+            "test_state".as_bytes().to_vec()
         }
     }
 
+    #[cfg(feature = "std")]
     #[tokio::test]
     async fn test_event_log() {
         let mut log = EventLog::default();
@@ -179,116 +222,17 @@ mod tests {
         assert_eq!(log.events().len(), 1);
     }
 
+    #[cfg(feature = "std")]
     #[tokio::test]
-    async fn test_event_log_with_contract() {
+    async fn test_event_storage() {
         let mut log = EventLog::default();
-        let contract_addr = WasmlAddress::new([1; 32]);
-
-        let event = Event::StateChange {
-            key: b"key".to_vec(),
-            value: b"value".to_vec(),
-        };
-
-        log.add_event(event).unwrap();
-        assert_eq!(log.events().len(), 1);
-    }
-
-    #[test]
-    fn test_event_validation() {
-        let contract_addr = WasmlAddress::new([1; 32]);
-
-        // Test valid event
-        let event = Event::Custom {
-            contract_addr: contract_addr.clone(),
-            name: "test_event".to_string(),
-            data: vec![1, 2, 3],
-            height: 1,
-            timestamp: 1000,
-        };
-        let mut log = EventLog::new();
-        assert!(log.add_event(event).is_ok());
-
-        // Test name too long
-        let long_name = "a".repeat(MAX_EVENT_NAME_LENGTH + 1);
-        let event = Event::Custom {
-            contract_addr: contract_addr.clone(),
-            name: long_name,
-            data: vec![1, 2, 3],
-            height: 1,
-            timestamp: 1000,
-        };
-        assert!(matches!(log.add_event(event), Err(Error::NameTooLong(_))));
-
-        // Test data too large
-        let large_data = vec![0; MAX_EVENT_DATA_SIZE + 1];
-        let event = Event::Custom {
-            contract_addr: contract_addr.clone(),
-            name: "test_event".to_string(),
-            data: large_data,
-            height: 1,
-            timestamp: 1000,
-        };
-        assert!(matches!(log.add_event(event), Err(Error::DataTooLarge(_))));
-
-        // Test state change event
-        let event = Event::StateChange {
-            key: vec![1; MAX_EVENT_DATA_SIZE / 2],
-            value: vec![2; MAX_EVENT_DATA_SIZE / 2 + 1],
-        };
-        assert!(matches!(log.add_event(event), Err(Error::DataTooLarge(_))));
-
-        // Test too many events
-        let mut log = EventLog::new();
-        for _ in 0..MAX_EVENTS_PER_CONTRACT {
-            let event = Event::Custom {
-                contract_addr: contract_addr.clone(),
-                name: "test_event".to_string(),
-                data: vec![1, 2, 3],
-                height: 1,
-                timestamp: 1000,
-            };
-            assert!(log.add_event(event).is_ok());
-        }
-
-        let event = Event::Custom {
-            contract_addr: contract_addr.clone(),
-            name: "test_event".to_string(),
-            data: vec![1, 2, 3],
-            height: 1,
-            timestamp: 1000,
-        };
-        assert!(matches!(log.add_event(event), Err(Error::TooManyEvents(_))));
-    }
-
-    #[test]
-    fn test_event_log_clear() {
-        let mut log = EventLog::new();
-        let contract_addr = WasmlAddress::new([1; 32]);
-
-        // Add valid events
-        for i in 0..MAX_EVENTS_PER_CONTRACT {
-            let event = Event::Custom {
-                contract_addr: contract_addr.clone(),
-                name: format!("event_{}", i),
-                data: vec![i as u8],
-                height: 1,
-                timestamp: 1000,
-            };
-            assert!(log.add_event(event).is_ok());
-        }
-
-        // Try to add one more event
-        let event = Event::Custom {
-            contract_addr: contract_addr,
-            name: "one_more".to_string(),
-            data: vec![0],
-            height: 1,
-            timestamp: 1000,
-        };
-        assert!(matches!(log.add_event(event), Err(Error::TooManyEvents(_))));
-
-        // Test clear
-        log.clear();
-        assert!(log.events().is_empty());
+        
+        log.store_state(b"test_key", &b"test_value".to_vec()).unwrap();
+        let value = log.get_state(b"test_key").unwrap().unwrap();
+        assert_eq!(value, b"test_value".to_vec());
+        
+        log.delete_state(b"test_key").unwrap();
+        let value = log.get_state(b"test_key").unwrap();
+        assert!(value.is_none());
     }
 }

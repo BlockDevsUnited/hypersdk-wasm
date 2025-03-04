@@ -13,6 +13,7 @@ test = ["wasmlanche/test"]
 [dependencies]
 wasmlanche = { workspace = true, default-features = false, features = ["debug"] }
 borsh = { version = "0.10", default-features = false }
+sdk-macros = { path = "../../../sdk-macros" }
 
 [dev-dependencies]
 wasmlanche = { workspace = true, features = ["debug", "test"] }

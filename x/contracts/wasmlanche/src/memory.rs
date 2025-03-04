@@ -139,7 +139,7 @@ impl HostPtr {
     }
 
     pub fn null() -> Self {
-        Self(std::ptr::null())
+        Self(core::ptr::null())
     }
 
     pub fn as_ptr(&self) -> *const u8 {

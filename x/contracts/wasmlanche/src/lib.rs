@@ -2,9 +2,8 @@
 // See the file LICENSE for licensing terms.
 
 #![deny(clippy::pedantic)]
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(any(not(feature = "std"), target_arch = "wasm32"), no_std)]
 #![cfg_attr(not(feature = "std"), feature(alloc_error_handler))]
-#![cfg_attr(target_arch = "wasm32", no_std)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -107,9 +106,11 @@ pub const ID_LEN: usize = 32;
 /// Re-exports commonly used types and traits.
 pub mod prelude {
     pub use super::{Context, Error, Event, EventLog, GasCounter};
+    pub use borsh;
     pub use sdk_macros::public;
 }
 
+// Re-export borsh for use by contracts
 pub use borsh;
 
 #[cfg(target_arch = "wasm32")]

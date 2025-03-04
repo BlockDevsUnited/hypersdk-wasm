@@ -1,3 +1,6 @@
+#![no_std]
+extern crate alloc;
+
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
@@ -13,9 +16,14 @@ pub struct ComplexReturn {
 
 #[public]
 pub fn get_value(ctx: &mut Context) -> ComplexReturn {
-    let account = ctx.actor().clone();
     ComplexReturn {
-        account,
+        account: ctx.actor.clone(),
         max_units: 1000,
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    core::arch::wasm32::unreachable()
 }

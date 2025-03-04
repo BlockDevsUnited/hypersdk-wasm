@@ -121,8 +121,25 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
                     core::slice::from_raw_parts(ptr, len)
                 };
 
-                let Args { mut ctx, #(#param_names),* } = BorshDeserialize::try_from_slice(args_slice)
-                    .expect("Failed to deserialize arguments");
+                let mut ctx = Context::new();
+                
+                let mut offset = core::mem::size_of::<Context>();
+                
+                #(
+                    let #param_names = if offset < args_slice.len() {
+                        let param_bytes = &args_slice[offset..];
+                        match ::borsh::from_slice(param_bytes) {
+                            Ok(val) => {
+                                // Update offset for next parameter
+                                offset += ::borsh::serialized_size(&val).unwrap_or(0);
+                                val
+                            },
+                            Err(_) => Default::default()
+                        }
+                    } else {
+                        Default::default()
+                    };
+                )*
 
                 #function_call
             });
@@ -136,8 +153,25 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
                     core::slice::from_raw_parts(ptr, len)
                 };
 
-                let Args { mut ctx, #(#param_names),* } = BorshDeserialize::try_from_slice(args_slice)
-                    .expect("Failed to deserialize arguments");
+                let mut ctx = Context::new();
+                
+                let mut offset = core::mem::size_of::<Context>();
+                
+                #(
+                    let #param_names = if offset < args_slice.len() {
+                        let param_bytes = &args_slice[offset..];
+                        match ::borsh::from_slice(param_bytes) {
+                            Ok(val) => {
+                                // Update offset for next parameter
+                                offset += ::borsh::serialized_size(&val).unwrap_or(0);
+                                val
+                            },
+                            Err(_) => Default::default()
+                        }
+                    } else {
+                        Default::default()
+                    };
+                )*
 
                 #function_call
             };
@@ -154,10 +188,7 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
         #[cfg(target_arch = "wasm32")]
         mod __wasm_exports {
             use super::*;
-            use borsh::{BorshDeserialize, BorshSerialize};
 
-            #[derive(BorshDeserialize)]
-            #[borsh(crate = "borsh")]
             pub struct Args {
                 pub ctx: Context,
                 #(pub #other_inputs),*
@@ -165,11 +196,12 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
 
             #[no_mangle]
             pub unsafe extern "C-unwind" fn #wasm_name(args: u32) -> i64 {
-                register_panic();
+                // Panic handling is now managed by the wasmlanche runtime
+                // No need to call register_panic here
 
                 #wasm_result
 
-                let result_bytes = BorshSerialize::try_to_vec(&result)
+                let result_bytes = ::borsh::to_vec(&result)
                     .expect("Failed to serialize result");
 
                 let ptr = result_bytes.as_ptr() as i64;

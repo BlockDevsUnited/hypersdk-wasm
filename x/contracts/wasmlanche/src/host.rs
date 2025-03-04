@@ -1,7 +1,4 @@
-// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
-
-#![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
