@@ -1,24 +1,29 @@
-#![no_std]
-extern crate alloc;
-
 // Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-use sdk_macros::public;
-use wasmlanche::{Context, types::WasmlAddress};
-use wasmlanche::borsh::{BorshSerialize, BorshDeserialize};
+#![no_std]
+extern crate alloc;
 
+use borsh::{BorshDeserialize, BorshSerialize};
+use wasmlanche::types::WasmlAddress;
+use wasmlanche::Context;
+use sdk_macros::public;
+use alloc::string::String;
+
+// This struct must match the Go ComplexReturn struct
 #[derive(BorshSerialize, BorshDeserialize)]
 pub struct ComplexReturn {
-    account: WasmlAddress,
-    max_units: u64,
+    Contract: WasmlAddress,
+    MaxUnits: u64,
 }
 
 #[public]
-pub fn get_value(ctx: &mut Context) -> ComplexReturn {
+pub fn get_value(ctx: &mut Context, _op_id: String) -> ComplexReturn {
+    // Added a second parameter to maintain compatibility with the test
+    // This parameter is not actually needed in the synchronous version
     ComplexReturn {
-        account: ctx.actor.clone(),
-        max_units: 1000,
+        Contract: ctx.actor.clone(),
+        MaxUnits: 1000,
     }
 }
 

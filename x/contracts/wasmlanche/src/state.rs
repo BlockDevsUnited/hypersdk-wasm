@@ -76,6 +76,11 @@ impl From<maybestd::io::Error> for Error {
 pub trait StateKey: Default {
     /// Get the key bytes for this state type
     fn key(&self) -> Vec<u8>;
+    
+    /// Get the key bytes for this state type
+    fn key_static() -> Vec<u8> {
+        Self::default().key()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

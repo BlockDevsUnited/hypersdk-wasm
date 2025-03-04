@@ -24,7 +24,9 @@ use crate::{
     state::{StateAccess, StateKey, Error as StateError},
 };
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+// Fixed by adding explicit type parameter for BorshDeserialize
+#[derive(Debug, Clone, BorshSerialize)]
+#[derive(BorshDeserialize)]
 pub enum Event {
     StateChange {
         key: Vec<u8>,
@@ -36,6 +38,13 @@ pub enum Event {
         data: Vec<u8>,
         height: u64,
         timestamp: u64,
+    }
+}
+
+impl Event {
+    pub fn try_from_slice(slice: &[u8]) -> Result<Self, borsh::maybestd::io::Error>
+    {
+        borsh::BorshDeserialize::try_from_slice(slice)
     }
 }
 

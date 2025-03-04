@@ -149,19 +149,26 @@ impl From<&[u8]> for WasmlAddress {
     }
 }
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, BorshSerialize)]
+#[derive(BorshDeserialize)]
 pub struct ContractInput {
     pub method: Vec<u8>,
     pub params: Vec<u8>,
 }
 
 impl ContractInput {
-    pub fn new(method: Vec<u8>, params: Vec<u8>) -> Self {
-        Self { method, params }
+    pub fn new(method: &[u8], params: &[u8]) -> Self {
+        Self { method: method.to_vec(), params: params.to_vec() }
+    }
+    
+    pub fn try_from_slice(slice: &[u8]) -> Result<Self, borsh::maybestd::io::Error>
+    {
+        borsh::BorshDeserialize::try_from_slice(slice)
     }
 }
 
-#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, BorshSerialize)]
+#[derive(BorshDeserialize)]
 pub struct ContractOutput {
     pub data: Vec<u8>,
 }
@@ -169,6 +176,11 @@ pub struct ContractOutput {
 impl ContractOutput {
     pub fn new(data: Vec<u8>) -> Self {
         Self { data }
+    }
+    
+    pub fn try_from_slice(slice: &[u8]) -> Result<Self, borsh::maybestd::io::Error>
+    {
+        borsh::BorshDeserialize::try_from_slice(slice)
     }
 }
 
