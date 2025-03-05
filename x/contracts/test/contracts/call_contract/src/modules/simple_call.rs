@@ -2,15 +2,17 @@
 // See the file LICENSE for licensing terms.
 
 use alloc::vec::Vec;
-use sdk_macros::public;
+// Don't use the macro for now
+// use sdk_macros::public;
 use wasmlanche::Context;
 
-#[public]
+// Standard sync function - no macro
 pub fn simple_call(_: &mut Context) -> i64 {
     0
 }
 
-#[public]
+// The async function can still use the macro if needed
+// for now we'll use a standard definition
 pub async fn simple_call_external(_ctx: &mut Context, _target: Vec<u8>, _max_units: u64) -> i64 {
     // Simulated call and result since call_contract is not available
     // This is a placeholder until the actual interface is updated

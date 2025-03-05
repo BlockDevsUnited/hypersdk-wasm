@@ -154,11 +154,16 @@ func (p *ContractInstance) call(ctx context.Context, callInfo *CallInfo) ([]byte
 		return nil, err
 	}
 
-	// WebAssembly exported functions use a wasm_ prefix
-	wasmFunctionName := "wasm_" + callInfo.FunctionName
+	// WebAssembly exported functions use a prefix
+	wasmFunctionName := "export_" + callInfo.FunctionName
 	function := p.inst.GetFunc(p.store, wasmFunctionName)
 	if function == nil {
-		return nil, fmt.Errorf("function %s (wasm export: %s) does not exist", callInfo.FunctionName, wasmFunctionName)
+		// Backward compatibility check with old wasm_ prefix if needed
+		wasmFunctionName = "wasm_" + callInfo.FunctionName
+		function = p.inst.GetFunc(p.store, wasmFunctionName)
+		if function == nil {
+			return nil, fmt.Errorf("function %s (wasm export: %s) does not exist", callInfo.FunctionName, "export_"+callInfo.FunctionName)
+		}
 	}
 	_, err = function.Call(p.store, paramsOffset)
 	if err != nil {

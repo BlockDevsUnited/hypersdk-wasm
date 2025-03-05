@@ -301,8 +301,17 @@ func (t *testContract) WithValue(value uint64) *testContract {
 }
 
 func into[T any](data []byte) T {
+	// Add more verbose debugging for serialization issues
+	println("Into function received data: ", len(data), " bytes")
+	for i, b := range data {
+		if i < 20 { // Limit to first 20 bytes to avoid huge output
+			println("Byte[", i, "]=", b)
+		}
+	}
+	
 	result, err := Deserialize[T](data)
 	if err != nil {
+		println("Deserialization error:", err.Error())
 		panic(err.Error())
 	}
 	return *result

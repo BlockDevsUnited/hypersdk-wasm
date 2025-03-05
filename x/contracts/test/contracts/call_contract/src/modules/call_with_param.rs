@@ -2,15 +2,18 @@
 // See the file LICENSE for licensing terms.
 
 use alloc::vec::Vec;
-use sdk_macros::public;
+// Don't use the macro for now
+// use sdk_macros::public;
 use wasmlanche::Context;
 
-#[public]
+// Standard sync function - no macro
 pub fn call_with_param(_: &mut Context, value: i64) -> i64 {
+    // Return the value as is
     value
 }
 
-#[public]
+// The async function can still use the macro if needed
+// for now we'll use a standard definition
 pub async fn call_with_param_external(
     _ctx: &mut Context,
     _target: Vec<u8>,
