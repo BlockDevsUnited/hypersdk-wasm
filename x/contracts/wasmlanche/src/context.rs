@@ -15,6 +15,7 @@ use spin::RwLock;
 use crate::{
     error::Error,
     events::Event,
+    future::{AsyncResult, StateResult},
     host::{Host, HostImpl, HostState},
     state::StateKey,
     types::WasmlAddress,
@@ -246,130 +247,218 @@ impl Context {
 
     /// Asynchronously get a value from contract state storage
     /// Returns an operation ID that can be used to check completion status
-    #[cfg(target_arch = "wasm32")]
-    pub fn get_async<T: BorshDeserialize>(&self, _key: &[u8]) -> Result<String, StateError> {
-        // In WebAssembly, generate an operation ID
-        let id_bytes = unsafe {
-            extern "C" {
-                fn generate_operation_id() -> i32;
-            }
-            let raw_id = generate_operation_id();
-            Vec::from(crate::memory::read_memory(raw_id as u64))
-        };
-
-        String::from_utf8(id_bytes).map_err(|_| Error::Serialization(String::from("Failed to convert operation ID to string")))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn get_async<T: BorshDeserialize>(&mut self, _key: &[u8]) -> Result<String, StateError> {
-        // Mock implementation for non-WASM environments
-        Ok(String::from("test-op-id-12345"))
-    }
-
-    /// Check if an async operation has completed
-    pub fn check_async_operation(&self, _op_id: &str) -> bool {
+    pub fn get_async<T: BorshDeserialize>(&self, key: &[u8]) -> AsyncResult<Option<T>> {
+        // The behavior depends on compile target
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Mock implementation for testing
-            true
+            // For non-wasm targets, we already have the data in memory
+            // Just return a completed future
+            if let Ok(Some(bytes)) = self.get_by_key(key) {
+                match T::try_from_slice(&bytes) {
+                    Ok(value) => AsyncResult::with_result(Ok(Some(value))),
+                    Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to deserialize value: {}", e)))),
+                }
+            } else {
+                // No data found
+                AsyncResult::with_result(Ok(None))
+            }
         }
+        
         #[cfg(target_arch = "wasm32")]
         {
-            extern "C" {
-                fn check_async_operation(op_id_ptr: *const u8, op_id_len: usize) -> i32;
+            // Generate a unique operation ID for this async operation
+            match self.generate_operation_id() {
+                Ok(_op_id) => {
+                    // Store the operation ID in the host state
+                    if let Ok(Some(bytes)) = self.get_by_key(key) {
+                        // If data is already available, return a completed future with the result
+                        match T::try_from_slice(&bytes) {
+                            Ok(value) => AsyncResult::with_result(Ok(Some(value))),
+                            Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to deserialize value: {}", e)))),
+                        }
+                    } else {
+                        // Otherwise, set up the async operation
+                        let mut result = AsyncResult::new();
+                        
+                        // In a real implementation, we would initiate the async operation here
+                        // For now, we're just creating a pending future
+                        result.resolve(Ok(None));
+                        
+                        result
+                    }
+                }
+                Err(e) => AsyncResult::with_result(Err(e)),
             }
-            
-            let op_id_bytes = _op_id.as_bytes();
-            
-            unsafe {
-                check_async_operation(op_id_bytes.as_ptr(), op_id_bytes.len()) > 0
-            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn get_async_wasm<T: BorshDeserialize>(&mut self, key: &[u8]) -> AsyncResult<Option<T>> {
+        // Generate a unique operation ID
+        match self.generate_operation_id() {
+            Ok(op_id) => {
+                // For wasm32 target, we need to call the host function
+                extern "C" {
+                    fn get_async(key_ptr: *const u8, key_len: usize) -> i32;
+                }
+                
+                let result = unsafe {
+                    get_async(key.as_ptr(), key.len())
+                };
+                
+                if result < 0 {
+                    AsyncResult::with_result(Err(Error::State(String::from("Failed to start async get operation"))))
+                } else {
+                    // Create a pending future - the real result will be retrieved later
+                    AsyncResult::new()
+                }
+            },
+            Err(e) => AsyncResult::with_result(Err(e)),
         }
     }
 
     /// Get the result of a completed async operation
-    #[cfg(target_arch = "wasm32")]
-    pub fn get_async_result<T: BorshDeserialize>(&self, op_id: &str) -> Result<Option<T>, StateError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn get_async_result<T: BorshDeserialize>(&self, op_id: &str) -> AsyncResult<Option<T>> {
         if !self.check_async_operation(op_id) {
-            return Ok(None);
+            // Operation not completed yet
+            return AsyncResult::new();
         }
-
-        // Get the operation result
-        let result_bytes = unsafe {
-            extern "C" {
-                fn get_async_result(op_id_ptr: *const u8, op_id_len: usize, key_ptr: *const u8, key_len: usize) -> i32;
-            }
-            let op_id_bytes = op_id.as_bytes();
-            // For the SHARED_KEY constant, we'll use the actor ID as the key for now
-            // This assumes that the async operation was for this actor's state
-            let key_bytes = crate::SHARED_KEY;
-            let result_id = get_async_result(
-                op_id_bytes.as_ptr(), 
-                op_id_bytes.len(),
-                key_bytes.as_ptr(),
-                key_bytes.len()
-            );
-            if result_id <= 0 {
-                return Ok(None);
-            }
-            Vec::from(crate::memory::read_memory(result_id as u64))
-        };
-
-        match result_bytes.len() {
-            0 => Ok(None),
-            _ => match T::try_from_slice(&result_bytes) {
-                Ok(value) => Ok(Some(value)),
-                Err(_) => Err(Error::Serialization(String::from("Failed to deserialize operation result"))),
+        
+        // In a real implementation, we would retrieve the result from a result store
+        // For simplicity, let's assume we have the result from normal state access
+        
+        // Example result fetching
+        let result_key = [op_id.as_bytes(), b"_result"].concat();
+        match self.get_by_key(&result_key) {
+            Ok(Some(bytes)) => {
+                match T::try_from_slice(&bytes) {
+                    Ok(value) => AsyncResult::with_result(Ok(Some(value))),
+                    Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to deserialize async result: {}", e)))),
+                }
             },
+            Ok(None) => AsyncResult::with_result(Ok(None)),
+            Err(e) => AsyncResult::with_result(Err(e)),
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn get_async_result<T: BorshDeserialize>(&self, _op_id: &str) -> Result<Option<T>, StateError> {
-        // Mock implementation for testing
-        // In a real implementation, this would check if the operation has completed
-        // and return the result if available
-        Ok(None)
+    #[cfg(target_arch = "wasm32")]
+    pub fn get_async_result<T: BorshDeserialize>(&self, op_id: &str) -> AsyncResult<Option<T>> {
+        if !self.check_async_operation(op_id) {
+            // Operation not completed yet
+            return AsyncResult::new();
+        }
+        
+        // For wasm32 target, we need to call the host function
+        extern "C" {
+            fn get_async_result(op_id_ptr: *const u8, op_id_len: usize) -> i32;
+        }
+        
+        let result = unsafe {
+            get_async_result(op_id.as_ptr(), op_id.len())
+        };
+        
+        if result < 0 {
+            AsyncResult::with_result(Err(Error::State(String::from("Failed to get async result"))))
+        } else {
+            // The result will be available through a special access mechanism
+            // For now, this is a placeholder
+            AsyncResult::with_result(Ok(None))
+        }
     }
 
     /// Store a value asynchronously in state
-    #[cfg(target_arch = "wasm32")]
-    pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> Result<String, StateError> {
-        let mut bytes = Vec::new();
-        value.serialize(&mut bytes).map_err(|_| Error::Serialization(String::from("Failed to serialize value")))?;
-        self.store_by_key_async(key, bytes)
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> AsyncResult<String> {
+        // Generate a unique operation ID
+        match self.generate_operation_id() {
+            Ok(op_id) => {
+                // Serialize the value
+                match value.try_to_vec() {
+                    Ok(serialized) => {
+                        // For now, we directly store it synchronously
+                        match self.store_by_key(key, serialized) {
+                            Ok(_) => AsyncResult::with_result(Ok(op_id)),
+                            Err(e) => AsyncResult::with_result(Err(e)),
+                        }
+                    },
+                    Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to serialize value: {}", e)))),
+                }
+            },
+            Err(e) => AsyncResult::with_result(Err(e)),
+        }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn put_async<T: BorshSerialize>(&mut self, _key: &[u8], _value: &T) -> Result<String, StateError> {
-        // Mock implementation for testing
-        Ok(String::from("test-op-id-12345"))
+    #[cfg(target_arch = "wasm32")]
+    pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> AsyncResult<String> {
+        // Generate a unique operation ID
+        match self.generate_operation_id() {
+            Ok(op_id) => {
+                // Serialize the value
+                match value.try_to_vec() {
+                    Ok(serialized) => {
+                        // For wasm32 target, call the host function
+                        extern "C" {
+                            fn put_async(key_ptr: *const u8, key_len: usize, value_ptr: *const u8, value_len: usize) -> i32;
+                        }
+                        
+                        let result = unsafe {
+                            put_async(key.as_ptr(), key.len(), serialized.as_ptr(), serialized.len())
+                        };
+                        
+                        if result < 0 {
+                            AsyncResult::with_result(Err(Error::State(String::from("Failed to start async put operation"))))
+                        } else {
+                            AsyncResult::with_result(Ok(op_id))
+                        }
+                    },
+                    Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to serialize value: {}", e)))),
+                }
+            },
+            Err(e) => AsyncResult::with_result(Err(e)),
+        }
     }
 
     /// Store raw bytes asynchronously in state
-    pub fn store_by_key_async(&mut self, _key: &[u8], _value: Vec<u8>) -> Result<String, StateError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn store_by_key_async(&mut self, key: &[u8], value: Vec<u8>) -> AsyncResult<String> {
         // Generate a unique operation ID
-        let op_id = self.generate_operation_id()?;
-        
-        // For now, we just perform the synchronous operation
-        // In the future, this would queue the operation and return immediately
-        #[cfg(target_arch = "wasm32")]
-        {
-            extern "C" {
-                fn store_async(key_ptr: *const u8, key_len: usize, value_ptr: *const u8, value_len: usize) -> i32;
-            }
-            
-            unsafe {
-                let result = store_async(_key.as_ptr(), _key.len(), _value.as_ptr(), _value.len());
-                if result < 0 {
-                    return Err(Error::State(String::from("Failed to start async store operation")));
+        match self.generate_operation_id() {
+            Ok(op_id) => {
+                // For now, we directly store it synchronously
+                match self.store_by_key(key, value) {
+                    Ok(_) => AsyncResult::with_result(Ok(op_id)),
+                    Err(e) => AsyncResult::with_result(Err(e)),
                 }
-            }
+            },
+            Err(e) => AsyncResult::with_result(Err(e)),
         }
-        
-        Ok(op_id)
     }
-    
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn store_by_key_async(&mut self, key: &[u8], value: Vec<u8>) -> AsyncResult<String> {
+        // Generate a unique operation ID
+        match self.generate_operation_id() {
+            Ok(op_id) => {
+                // For wasm32 target, call the host function
+                extern "C" {
+                    fn store_async(key_ptr: *const u8, key_len: usize, value_ptr: *const u8, value_len: usize) -> i32;
+                }
+                
+                let result = unsafe {
+                    store_async(key.as_ptr(), key.len(), value.as_ptr(), value.len())
+                };
+                
+                if result < 0 {
+                    AsyncResult::with_result(Err(Error::State(String::from("Failed to start async store operation"))))
+                } else {
+                    AsyncResult::with_result(Ok(op_id))
+                }
+            },
+            Err(e) => AsyncResult::with_result(Err(e)),
+        }
+    }
+
     /// Generate a unique operation ID for async operations
     #[cfg(not(target_arch = "wasm32"))]
     pub fn generate_operation_id(&mut self) -> Result<String, StateError> {
@@ -401,6 +490,27 @@ impl Context {
             .collect::<String>();
             
         Ok(id)
+    }
+
+    /// Check if an async operation has completed
+    pub fn check_async_operation(&self, _op_id: &str) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Mock implementation for testing
+            true
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            extern "C" {
+                fn check_async_operation(op_id_ptr: *const u8, op_id_len: usize) -> i32;
+            }
+            
+            let op_id_bytes = _op_id.as_bytes();
+            
+            unsafe {
+                check_async_operation(op_id_bytes.as_ptr(), op_id_bytes.len()) > 0
+            }
+        }
     }
 }
 

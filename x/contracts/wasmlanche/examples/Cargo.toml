@@ -1,0 +1,26 @@
+[package]
+name = "wasmlanche-examples"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+path = "lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "cross_contract_caller"
+path = "cross_contract_caller.rs"
+
+[[bin]]
+name = "cross_contract_callee"
+path = "cross_contract_callee.rs"
+
+[[bin]]
+name = "async_contract_example"
+path = "async_contract_example.rs"
+
+[dependencies]
+wasmlanche = { path = ".." }
+borsh = "0.10.3"

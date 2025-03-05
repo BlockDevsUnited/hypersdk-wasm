@@ -110,7 +110,7 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
             use wasmlanche::borsh::{BorshSerialize, BorshDeserialize};
             use wasmlanche::Context;
             
-            let result = futures::executor::block_on(async {
+            let result = async {
                 let args_slice = unsafe {
                     let ptr = args as *const u8;
                     let len = *(ptr.offset(-4) as *const u32) as usize;
@@ -177,9 +177,9 @@ pub fn impl_public(input: ItemFn) -> Result<TokenStream, syn::Error> {
                 // We still return a non-zero value to indicate success, 
                 // but the actual result is passed via set_call_result
                 1
-            });
+            };
 
-            result
+            result.await
         }
     } else {
         quote! {

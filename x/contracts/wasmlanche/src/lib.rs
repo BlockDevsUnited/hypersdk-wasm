@@ -20,6 +20,7 @@ pub mod build;
 pub mod context;
 pub mod error;
 pub mod events;
+pub mod future;
 pub mod gas;
 pub mod host;
 pub mod memory;
@@ -32,6 +33,7 @@ pub use crate::{
     context::Context,
     error::Error,
     events::{Event, EventLog},
+    future::{AsyncResult, StateResult, ContractCallResult, UnitResult},
     gas::GasCounter,
     host::Host,
     memory::Memory,
