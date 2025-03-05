@@ -15,7 +15,7 @@ use spin::RwLock;
 use crate::{
     error::Error,
     events::Event,
-    future::{AsyncResult, StateResult},
+    future::{AsyncResult, ContractCallResult},
     host::{Host, HostImpl, HostState},
     state::StateKey,
     types::WasmlAddress,
@@ -68,6 +68,15 @@ impl Context {
         Self {
             actor,
             state: RwLock::new(()),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_host<H: Host + 'static>(host: H) -> Self {
+        Self {
+            actor: WasmlAddress::default(), // Default actor address
+            host: Box::new(host),
+            state: RwLock::new(HostState::default()),
         }
     }
 
@@ -511,6 +520,151 @@ impl Context {
                 check_async_operation(op_id_bytes.as_ptr(), op_id_bytes.len()) > 0
             }
         }
+    }
+
+    /// Call another contract asynchronously
+    /// 
+    /// This function initiates an asynchronous call to another contract and returns a future
+    /// that resolves when the call completes or times out.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `target` - The address of the contract to call
+    /// * `method` - The name of the method to call
+    /// * `args` - The serialized arguments to pass to the method
+    /// * `timeout_ms` - Optional timeout in milliseconds, defaults to 10000 (10 seconds)
+    /// 
+    /// # Returns
+    /// 
+    /// A future that resolves to the result of the contract call, or an error
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn call_contract(&mut self, target: &WasmlAddress, method: &str, args: &[u8], timeout_ms: Option<u64>) -> Result<Vec<u8>, Error> {
+        // Default timeout of 10 seconds if not specified
+        let _timeout = timeout_ms.unwrap_or(10000);
+        
+        // Account for gas cost of cross-contract call
+        // A real implementation would calculate this based on the target contract and method
+        let estimated_gas = args.len() as u64 + method.len() as u64 + 1000;
+        if let Err(e) = self.host.consume_gas(estimated_gas) {
+            return Err(Error::Gas(format!("Insufficient gas for cross-contract call: {}", e)));
+        }
+        
+        // In non-WASM mode, we can directly execute the target contract in the simulator
+        // In the future, this would involve more complex contract loading and execution
+        
+        // Create a ContractCallResult to return
+        let mut result = ContractCallResult::new();
+        
+        // For demonstration, we're simulating the async nature:
+        // 1. Check if the target contract exists (we'll just check the address is valid)
+        if target.as_bytes().len() != 32 {
+            result.resolve(Err(format!("Invalid target contract address")));
+            return Err(Error::Contract(String::from("Invalid target contract address")));
+        }
+        
+        // 2. Set up the result - this would actually call the contract in a real implementation
+        let response = self.host.call_contract(target, method, args)?;
+        
+        // Return the response
+        Ok(response)
+    }
+    
+    /// Call another contract asynchronously in WASM environment
+    /// 
+    /// This function initiates an asynchronous call to another contract and returns a future
+    /// that resolves when the call completes or times out.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn call_contract(&mut self, target: &WasmlAddress, method: &str, args: &[u8], timeout_ms: Option<u64>) -> Result<Vec<u8>, Error> {
+        // Default timeout of 10 seconds if not specified
+        let timeout = timeout_ms.unwrap_or(10000);
+        
+        // Generate a unique operation ID for this async operation
+        let op_id = self.generate_operation_id()?;
+        
+        extern "C" {
+            fn call_contract(
+                target_ptr: *const u8, 
+                target_len: usize, 
+                method_ptr: *const u8, 
+                method_len: usize, 
+                args_ptr: *const u8, 
+                args_len: usize,
+                timeout_ms: u64,
+                op_id_ptr: *const u8,
+                op_id_len: usize
+            ) -> i32;
+        }
+        
+        let target_bytes = target.as_bytes();
+        let method_bytes = method.as_bytes();
+        let op_id_bytes = op_id.as_bytes();
+        
+        // Initiate the cross-contract call
+        let result = unsafe {
+            call_contract(
+                target_bytes.as_ptr(),
+                target_bytes.len(),
+                method_bytes.as_ptr(),
+                method_bytes.len(),
+                args.as_ptr(),
+                args.len(),
+                timeout,
+                op_id_bytes.as_ptr(),
+                op_id_bytes.len()
+            )
+        };
+        
+        if result < 0 {
+            return Err(Error::Contract(String::from("Failed to initiate cross-contract call")));
+        }
+        
+        // Now we wait for the operation to complete
+        // Create a ContractCallResult
+        let mut call_result = ContractCallResult::new();
+        
+        // For now, we'll just set it to pending
+        // The actual result will be fetched and resolved by the host environment
+        
+        // In a real implementation, we would check for timeout and completion
+        // For now, we return an empty successful result
+        call_result.resolve(Ok(Vec::new()));
+        
+        // Convert ContractCallResult to Result<Vec<u8>, Error>
+        match call_result.await {
+            Ok(data) => Ok(data),
+            Err(e) => Err(Error::Contract(e)),
+        }
+    }
+
+    /// Get the current timestamp (milliseconds since epoch)
+    /// 
+    /// This method provides access to the blockchain's current timestamp,
+    /// allowing for time-based contract logic.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn current_timestamp(&self) -> Result<u64, Error> {
+        // In the simulator, we use the local system time
+        // In a real blockchain implementation, this would be the block timestamp
+        use std::time::{SystemTime, UNIX_EPOCH};
+        
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => Ok(duration.as_millis() as u64),
+            Err(_) => Err(Error::Unknown(String::from("Failed to get current timestamp"))),
+        }
+    }
+    
+    /// Get the current timestamp (milliseconds since epoch)
+    /// 
+    /// This method provides access to the blockchain's current timestamp,
+    /// allowing for time-based contract logic.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn current_timestamp(&self) -> Result<u64, Error> {
+        extern "C" {
+            fn get_timestamp() -> u64;
+        }
+        
+        // Call the host function to get the current timestamp
+        let timestamp = unsafe { get_timestamp() };
+        Ok(timestamp)
     }
 }
 

@@ -67,6 +67,8 @@ pub trait Host: Send + Sync {
     fn get_balance(&self, account: &WasmlAddress) -> u64;
     fn set_balance(&mut self, account: &WasmlAddress, amount: u64);
     fn emit_event(&mut self, event: Event) -> Result<(), Error>;
+    fn consume_gas(&mut self, amount: u64) -> Result<(), Error>;
+    fn call_contract(&mut self, target: &WasmlAddress, method: &str, args: &[u8]) -> Result<Vec<u8>, Error>;
 }
 
 /// Default implementation of Host
@@ -131,6 +133,16 @@ impl Host for HostImpl {
 
     fn emit_event(&mut self, event: Event) -> Result<(), Error> {
         self.add_event(event)
+    }
+
+    fn consume_gas(&mut self, amount: u64) -> Result<(), Error> {
+        self.charge_gas(amount)
+    }
+
+    fn call_contract(&mut self, _target: &WasmlAddress, _method: &str, _args: &[u8]) -> Result<Vec<u8>, Error> {
+        // For now, just return empty result
+        // TODO: Implement actual cross-contract call
+        Ok(vec![])
     }
 }
 

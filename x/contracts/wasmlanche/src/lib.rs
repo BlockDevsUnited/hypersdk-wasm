@@ -123,7 +123,7 @@ pub extern "C" fn allocate(size: u32) -> Option<core::ptr::NonNull<u8>> {
     let host_ptr = crate::memory::alloc(size as usize);
     
     // Convert the raw pointer to a NonNull<u8>
-    unsafe { core::ptr::NonNull::new(host_ptr.as_ptr() as *mut u8) }
+    core::ptr::NonNull::new(host_ptr.as_ptr() as *mut u8)
 }
 
 #[cfg(test)]

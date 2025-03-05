@@ -465,7 +465,7 @@ impl SimulatorImpl {
             println!("Getting state: {}", hex::encode(key));
             
             // Use try_read instead of blocking_read
-            match self.state.try_read() {
+            match state.try_read() {
                 Ok(guard) => guard.get(key).cloned(),
                 Err(_) => None,
             }
@@ -474,7 +474,6 @@ impl SimulatorImpl {
 
     // Delete state asynchronously
     fn delete_state<'a>(&'a mut self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
-        let state = self.state.clone();
         Box::pin(async move {
             // Implementation for delete_state
             println!("Deleting state: {}", hex::encode(key));
