@@ -13,6 +13,7 @@ pub mod modules;
 // Re-export public functions at crate root level
 pub use modules::produce;
 pub use modules::produce_async;
+pub use modules::produce_direct;
 pub use modules::check_operation;
 pub use modules::get_operation_result;
 

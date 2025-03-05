@@ -9,5 +9,6 @@ pub mod get_operation_result;
 // Re-export the public functions
 pub use produce::produce;
 pub use produce_async::produce_async;
+pub use produce_async::produce_direct;
 pub use check_operation::check_operation;
 pub use get_operation_result::get_operation_result;
