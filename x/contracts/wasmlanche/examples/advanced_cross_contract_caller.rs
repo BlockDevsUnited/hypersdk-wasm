@@ -100,7 +100,7 @@ pub async fn call_with_timeout(ctx: &mut Context, args: CrossCallArgs) -> AsyncR
         }
     };
     
-    AsyncResult::Ok(result)
+    AsyncResult::with_result(Ok(result))
 }
 
 /// Get the details of the last call made
@@ -109,27 +109,24 @@ pub async fn get_last_call_details(ctx: &mut Context) -> AsyncResult<CrossCallAr
     let key = b"last_call_details";
     match ctx.get_state(key).await? {
         Some(bytes) => {
-            let args = borsh::from_slice::<CrossCallArgs>(&bytes)
+            let args = borsh::from_slice(&bytes)
                 .map_err(|e| Error::Serialization(format!("Failed to deserialize call details: {}", e)))?;
-            AsyncResult::Ok(args)
+            AsyncResult::with_result(Ok(args))
         },
-        None => AsyncResult::with_result(Err(Error::State(String::from("No call details found")))),
+        None => AsyncResult::with_result(Err(Error::State("No call details found".to_string()))),
     }
 }
 
 /// Make multiple cross-contract calls in parallel
 #[public]
 pub async fn parallel_calls(ctx: &mut Context, targets: Vec<CrossCallArgs>) -> AsyncResult<Vec<CrossCallResult>> {
-    let mut results = Vec::with_capacity(targets.len());
-    
-    // In a true parallel implementation, we would use something like futures::join_all
+    let mut results = Vec::new();
+
     // For now, we'll just call them sequentially but demonstrate the API
     for args in targets {
-        match call_with_timeout(ctx, args).await {
-            Ok(result) => results.push(result),
-            Err(e) => return AsyncResult::with_result(Err(e)),
-        }
+        let result = call_with_timeout(ctx, args).await?;
+        results.push(result);
     }
     
-    AsyncResult::Ok(results)
+    AsyncResult::with_result(Ok(results))
 }

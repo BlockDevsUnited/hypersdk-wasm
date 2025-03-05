@@ -91,14 +91,14 @@ pub async fn get_value(ctx: &mut Context, amount: u64) -> AsyncResult<u64> {
     }
     
     // Return doubled amount
-    AsyncResult::Ok(amount * 2)
+    AsyncResult::with_result(Ok(amount * 2))
 }
 
 /// Get stored call metadata
 #[public]
 pub async fn get_call_metadata(ctx: &mut Context) -> AsyncResult<CallMetadata> {
     match ctx.get_state::<CallMetadata>().await? {
-        Some(metadata) => AsyncResult::Ok(metadata),
+        Some(metadata) => AsyncResult::with_result(Ok(metadata)),
         None => AsyncResult::with_result(Err(Error::State(String::from("No call metadata found")))),
     }
 }
@@ -111,9 +111,9 @@ pub async fn reset_call_counter(ctx: &mut Context) -> AsyncResult<u64> {
             let old_count = metadata.call_count;
             metadata.call_count = 0;
             ctx.store_state(&metadata).await?;
-            AsyncResult::Ok(old_count)
+            AsyncResult::with_result(Ok(old_count))
         },
-        None => AsyncResult::Ok(0),
+        None => AsyncResult::with_result(Ok(0)),
     }
 }
 
@@ -122,32 +122,22 @@ pub async fn reset_call_counter(ctx: &mut Context) -> AsyncResult<u64> {
 /// This is used to test timeout handling in the caller contract
 #[public]
 pub async fn slow_operation(ctx: &mut Context, delay_ms: u64) -> AsyncResult<u64> {
-    // In a real implementation, this would delay for the specified time
-    // Here we just return after recording that the operation was called
+    // Record the operation in state
+    let key = b"slow_operation_delay";
+    let value = delay_ms.to_le_bytes().to_vec();
+    ctx.store_state(key, &value).await?;
     
-    // Record that this was called
-    let mut metadata = match ctx.get_state::<CallMetadata>().await? {
-        Some(mut existing) => {
-            existing.amount = delay_ms;
-            existing.call_count += 1;
-            existing
-        },
-        None => CallMetadata {
-            caller: None,
-            amount: delay_ms,
-            timestamp: 0,
-            call_count: 1,
-        },
-    };
+    // If this is a time-out request, just don't respond
+    // In a real implementation, we would simulate a delay:
+    // tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     
-    ctx.store_state(&metadata).await?;
-    
-    // Simulate an operation that takes longer than the timeout
+    // For testing purposes:
+    // If delay is extremely large, we simulate a hanging operation
     if delay_ms > 10000 {
-        // This would normally hang, but we're just returning a value to prevent actual hanging
-        AsyncResult::Ok(42)
+        // In a real implementation, this would never actually return
+        AsyncResult::with_result(Ok(42))
     } else {
-        // Return the delay as the value
-        AsyncResult::Ok(delay_ms)
+        // Otherwise we complete normally after the simulated delay
+        AsyncResult::with_result(Ok(delay_ms))
     }
 }
