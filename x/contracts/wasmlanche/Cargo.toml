@@ -16,6 +16,8 @@ spin = { version = "0.9.8", default-features = false, features = ["rwlock", "mut
 simulator = { path = "../simulator", optional = true }
 thiserror = { version = "1.0.56", optional = true }
 async-trait = { version = "0.1", optional = true }
+uuid = "0.8.2"
+lazy_static = "1.4.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 wasmtime = { version = "25.0.3", default-features = false, features = ["async", "cranelift"] }

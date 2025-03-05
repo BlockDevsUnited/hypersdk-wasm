@@ -20,6 +20,20 @@ pub use modules::get_operation_result;
 pub const SHARED_KEY: &[u8] = b"shared_value";
 
 #[cfg(target_arch = "wasm32")]
+mod imports {
+    extern "C" {
+        pub fn set_call_result(ptr: *const u8, len: usize);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn return_result(data: &[u8]) {
+    unsafe {
+        imports::set_call_result(data.as_ptr(), data.len());
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     core::arch::wasm32::unreachable()

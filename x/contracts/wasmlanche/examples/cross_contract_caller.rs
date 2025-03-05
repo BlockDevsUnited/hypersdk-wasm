@@ -1,8 +1,9 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use wasmlanche::{
-    context::{Context, WasmlAddress},
-    future::{AsyncResult, ContractCallResult, StateResult},
-    public,
+    context::Context,
+    future::{AsyncResult, StateResult},
+    error::Error,
+    types::WasmlAddress,
 };
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -17,39 +18,72 @@ pub struct CallResult {
     pub value: u64,
 }
 
-#[public]
 pub async fn make_cross_contract_call(ctx: &mut Context, args: CallArgs) -> AsyncResult<CallResult> {
     // Store some state first
     let key = b"last_called";
-    ctx.store_state(key, &args.target.to_bytes()).await?;
+    // Use as_bytes() instead of to_bytes()
+    let result = ctx.store_by_key(key, args.target.as_bytes().to_vec());
+    match result {
+        Err(e) => return AsyncResult::with_result(Err(e)),
+        Ok(_) => {},
+    }
     
     // Make a cross-contract call
     let call_args = args.amount.to_le_bytes().to_vec();
-    let result = ctx.call_contract(&args.target, "get_value", &call_args).await?;
+    
+    // Use match instead of ? operator
+    // Add None as the timeout parameter (no timeout)
+    let result = match ctx.call_contract(&args.target, "get_value", &call_args, None).await {
+        Ok(data) => data,
+        Err(e) => return AsyncResult::with_result(Err(e)),
+    };
     
     // Read the result
     let value = if !result.is_empty() {
-        let bytes: [u8; 8] = result.try_into().map_err(|_| "Invalid result length")?;
-        u64::from_le_bytes(bytes)
+        // Use match instead of ? operator
+        match result.try_into() {
+            Ok(bytes) => u64::from_le_bytes(bytes),
+            Err(_) => return AsyncResult::with_result(Err(Error::Serialization(String::from("Invalid result format")))),
+        }
     } else {
         0
     };
     
-    // Return the result
-    AsyncResult::Ok(CallResult {
+    // Return the result using the correct AsyncResult constructor
+    AsyncResult::with_result(Ok(CallResult {
         success: true,
         value,
-    })
+    }))
 }
 
-#[public]
-pub async fn get_last_called(ctx: &mut Context) -> StateResult<WasmlAddress> {
+pub async fn get_last_called(ctx: &mut Context) -> StateResult<Option<WasmlAddress>> {
     let key = b"last_called";
-    match ctx.get_state(key).await? {
-        Some(bytes) => {
-            let address = WasmlAddress::from_bytes(&bytes).map_err(|_| "Invalid address")?;
-            StateResult::Ok(address)
+    
+    // We need to use get_by_key to access the raw bytes using a custom key
+    match ctx.get_by_key(key) {
+        Ok(Some(bytes)) => {
+            // Use WasmlAddress::new or From trait instead of from_bytes
+            if bytes.len() == 32 {
+                let mut addr_bytes = [0u8; 32];
+                addr_bytes.copy_from_slice(&bytes);
+                // StateResult<Option<WasmlAddress>> means we need to return
+                // a Result<Option<Option<WasmlAddress>>, Error>
+                StateResult::with_result(Ok(Some(Some(WasmlAddress::new(addr_bytes)))))
+            } else {
+                StateResult::with_result(Err(Error::Serialization("Invalid address bytes".to_string())))
+            }
         }
-        None => StateResult::Err("No last called contract".into()),
+        Ok(None) => StateResult::with_result(Ok(Some(None))),
+        Err(e) => StateResult::with_result(Err(e)),
     }
+}
+
+fn main() {
+    println!("Cross-Contract Caller Example");
+    println!("----------------------------");
+    println!("This example demonstrates a contract that makes calls to other contracts.");
+    println!("It stores the address of the last called contract and the result.");
+    println!();
+    println!("Run the example with:");
+    println!("  cargo run --example cross_contract_caller");
 }

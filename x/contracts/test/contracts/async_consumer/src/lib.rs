@@ -17,6 +17,20 @@ use wasmlanche::Context;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
+#[cfg(target_arch = "wasm32")]
+mod imports {
+    extern "C" {
+        pub fn set_call_result(ptr: *const u8, len: usize);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn return_result(data: &[u8]) {
+    unsafe {
+        imports::set_call_result(data.as_ptr(), data.len());
+    }
+}
+
 const SHARED_KEY: &[u8] = b"shared_value";
 
 #[public]
@@ -52,9 +66,34 @@ pub fn consume(ctx: &mut Context) -> i64 {
 #[public]
 pub fn consume_async(ctx: &mut Context) -> String {
     // Start an async read operation
-    match ctx.get_async::<Vec<u8>>(SHARED_KEY) {
-        Ok(op_id) => op_id,
-        Err(err) => format!("ERROR:{:?}", err),
+    let result = ctx.get_async::<Vec<u8>>(SHARED_KEY);
+    
+    // Check if the result is immediately available
+    if let Some(inner_result) = result.result {
+        match inner_result {
+            Ok(Some(bytes)) => {
+                // Immediately got a result
+                if bytes.len() < 4 {
+                    return String::from("ERROR:Invalid data length");
+                }
+                
+                // Convert bytes to i32
+                let mut array = [0u8; 4];
+                array.copy_from_slice(&bytes[0..4]);
+                let value = i32::from_le_bytes(array);
+                
+                format!("COMPLETED:{}", value)
+            },
+            Ok(None) => {
+                // No data but operation completed successfully
+                String::from("COMPLETED:NONE")
+            },
+            Err(err) => format!("ERROR:{:?}", err),
+        }
+    } else {
+        // The operation is pending, return the operation ID
+        // In a real implementation, we would generate and store an operation ID
+        String::from("PENDING:async_op_1")
     }
 }
 

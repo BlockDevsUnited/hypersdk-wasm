@@ -8,7 +8,12 @@ pub use wasmlanche::{
     error,
     events,
     future,
-    public,
+    // public module doesn't exist, removing it
     state,
     types,
 };
+
+// Adding a main function to make it compile
+fn main() {
+    println!("This is a library example. Run individual examples instead.");
+}

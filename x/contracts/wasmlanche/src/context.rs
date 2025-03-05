@@ -326,12 +326,12 @@ impl Context {
         }
     }
 
-    /// Get the result of a completed async operation
+    /// Get the result of an async operation
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn get_async_result<T: BorshDeserialize>(&self, op_id: &str) -> AsyncResult<Option<T>> {
+    pub fn get_async_result<T: BorshDeserialize>(&self, op_id: &str) -> Result<Option<T>, Error> {
         if !self.check_async_operation(op_id) {
             // Operation not completed yet
-            return AsyncResult::new();
+            return Err(Error::State(String::from("Operation not completed yet")));
         }
         
         // In a real implementation, we would retrieve the result from a result store
@@ -342,20 +342,20 @@ impl Context {
         match self.get_by_key(&result_key) {
             Ok(Some(bytes)) => {
                 match T::try_from_slice(&bytes) {
-                    Ok(value) => AsyncResult::with_result(Ok(Some(value))),
-                    Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to deserialize async result: {}", e)))),
+                    Ok(value) => Ok(Some(value)),
+                    Err(e) => Err(Error::State(format!("Failed to deserialize async result: {}", e))),
                 }
             },
-            Ok(None) => AsyncResult::with_result(Ok(None)),
-            Err(e) => AsyncResult::with_result(Err(e)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn get_async_result<T: BorshDeserialize>(&self, op_id: &str) -> AsyncResult<Option<T>> {
+    pub fn get_async_result<T: BorshDeserialize>(&self, op_id: &str) -> Result<Option<T>, Error> {
         if !self.check_async_operation(op_id) {
             // Operation not completed yet
-            return AsyncResult::new();
+            return Err(Error::State(String::from("Operation not completed yet")));
         }
         
         // For wasm32 target, we need to call the host function
@@ -368,84 +368,49 @@ impl Context {
         };
         
         if result < 0 {
-            AsyncResult::with_result(Err(Error::State(String::from("Failed to get async result"))))
+            Err(Error::State(String::from("Failed to get async result")))
         } else {
             // The result will be available through a special access mechanism
             // For now, this is a placeholder
-            AsyncResult::with_result(Ok(None))
+            Ok(None)
         }
     }
 
     /// Store a value asynchronously in state
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> AsyncResult<String> {
-        // Generate a unique operation ID
-        match self.generate_operation_id() {
-            Ok(op_id) => {
-                // Serialize the value
-                match value.try_to_vec() {
-                    Ok(serialized) => {
-                        // For now, we directly store it synchronously
-                        match self.store_by_key(key, serialized) {
-                            Ok(_) => AsyncResult::with_result(Ok(op_id)),
-                            Err(e) => AsyncResult::with_result(Err(e)),
-                        }
-                    },
-                    Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to serialize value: {}", e)))),
-                }
-            },
-            Err(e) => AsyncResult::with_result(Err(e)),
+    pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> Result<String, Error> {
+        match value.try_to_vec() {
+            Ok(bytes) => self.store_by_key_async(key, bytes),
+            Err(e) => Err(Error::State(format!("Failed to serialize value: {}", e))),
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> AsyncResult<String> {
-        // Generate a unique operation ID
-        match self.generate_operation_id() {
-            Ok(op_id) => {
-                // Serialize the value
-                match value.try_to_vec() {
-                    Ok(serialized) => {
-                        // For wasm32 target, call the host function
-                        extern "C" {
-                            fn put_async(key_ptr: *const u8, key_len: usize, value_ptr: *const u8, value_len: usize) -> i32;
-                        }
-                        
-                        let result = unsafe {
-                            put_async(key.as_ptr(), key.len(), serialized.as_ptr(), serialized.len())
-                        };
-                        
-                        if result < 0 {
-                            AsyncResult::with_result(Err(Error::State(String::from("Failed to start async put operation"))))
-                        } else {
-                            AsyncResult::with_result(Ok(op_id))
-                        }
-                    },
-                    Err(e) => AsyncResult::with_result(Err(Error::State(format!("Failed to serialize value: {}", e)))),
-                }
-            },
-            Err(e) => AsyncResult::with_result(Err(e)),
+    pub fn put_async<T: BorshSerialize>(&mut self, key: &[u8], value: &T) -> Result<String, Error> {
+        match value.try_to_vec() {
+            Ok(bytes) => self.store_by_key_async(key, bytes),
+            Err(e) => Err(Error::State(format!("Failed to serialize value: {}", e))),
         }
     }
 
     /// Store raw bytes asynchronously in state
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn store_by_key_async(&mut self, key: &[u8], value: Vec<u8>) -> AsyncResult<String> {
+    pub fn store_by_key_async(&mut self, key: &[u8], value: Vec<u8>) -> Result<String, Error> {
         // Generate a unique operation ID
         match self.generate_operation_id() {
             Ok(op_id) => {
                 // For now, we directly store it synchronously
                 match self.store_by_key(key, value) {
-                    Ok(_) => AsyncResult::with_result(Ok(op_id)),
-                    Err(e) => AsyncResult::with_result(Err(e)),
+                    Ok(_) => Ok(op_id),
+                    Err(e) => Err(e),
                 }
             },
-            Err(e) => AsyncResult::with_result(Err(e)),
+            Err(e) => Err(e),
         }
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn store_by_key_async(&mut self, key: &[u8], value: Vec<u8>) -> AsyncResult<String> {
+    pub fn store_by_key_async(&mut self, key: &[u8], value: Vec<u8>) -> Result<String, Error> {
         // Generate a unique operation ID
         match self.generate_operation_id() {
             Ok(op_id) => {
@@ -459,12 +424,12 @@ impl Context {
                 };
                 
                 if result < 0 {
-                    AsyncResult::with_result(Err(Error::State(String::from("Failed to start async store operation"))))
+                    Err(Error::State(String::from("Failed to start async store operation")))
                 } else {
-                    AsyncResult::with_result(Ok(op_id))
+                    Ok(op_id)
                 }
             },
-            Err(e) => AsyncResult::with_result(Err(e)),
+            Err(e) => Err(e),
         }
     }
 
@@ -640,7 +605,7 @@ impl Context {
     /// 
     /// This method provides access to the blockchain's current timestamp,
     /// allowing for time-based contract logic.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
     pub async fn current_timestamp(&self) -> Result<u64, Error> {
         // In the simulator, we use the local system time
         // In a real blockchain implementation, this would be the block timestamp
@@ -650,6 +615,14 @@ impl Context {
             Ok(duration) => Ok(duration.as_millis() as u64),
             Err(_) => Err(Error::Unknown(String::from("Failed to get current timestamp"))),
         }
+    }
+    
+    /// Get the current timestamp (milliseconds since epoch)
+    /// This is a non-std implementation for testing in no_std environments
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "std")))]
+    pub async fn current_timestamp(&self) -> Result<u64, Error> {
+        // For no_std environments, return a mock timestamp
+        Ok(42_000_000_000) // Mock timestamp
     }
     
     /// Get the current timestamp (milliseconds since epoch)
@@ -665,6 +638,31 @@ impl Context {
         // Call the host function to get the current timestamp
         let timestamp = unsafe { get_timestamp() };
         Ok(timestamp)
+    }
+
+    /// Get the current timestamp (milliseconds since epoch)
+    /// 
+    /// This method provides access to the blockchain's current timestamp,
+    /// allowing for time-based contract logic.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn get_timestamp(&self) -> u64 {
+        // In a real implementation, this would be provided by the host environment
+        // For testing, we can use the system time
+        #[cfg(feature = "std")]
+        {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        }
+        
+        #[cfg(not(feature = "std"))]
+        {
+            // For no_std environments, return a mock timestamp
+            // In a real implementation, this would come from the host
+            42_000_000_000 // Mock timestamp
+        }
     }
 }
 

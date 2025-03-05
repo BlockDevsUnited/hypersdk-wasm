@@ -136,9 +136,9 @@ pub trait SimulatorExt: Simulator + Send + Sync {
         gas: u64,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 
-    fn remaining_fuel_async(&self) -> u64;
+    fn remaining_fuel_async<'a>(&'a self) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>>;
 
-    fn get_events_async(&self) -> Vec<Event>;
+    fn get_events_async<'a>(&'a self) -> Pin<Box<dyn Future<Output = Vec<Event>> + Send + 'a>>;
 }
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
@@ -451,24 +451,21 @@ impl SimulatorImpl {
 
     // Store state asynchronously
     fn store_state<'a>(&'a mut self, key: &'a [u8], value: &'a [u8]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        let state = self.state.clone();
         Box::pin(async move {
-            state.write().await.insert(key.to_vec(), value.to_vec());
+            // Implementation for store_state
+            println!("Storing state: {}", hex::encode(key));
+            let mut guard = self.state.write().await;
+            guard.insert(key.to_vec(), value.to_vec());
         })
     }
 
     // Get state asynchronously
     fn get_state<'a>(&'a self, key: &'a [u8]) -> Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + 'a>> {
-        let state = self.state.clone();
         Box::pin(async move {
             // Implementation for get_state
             println!("Getting state: {}", hex::encode(key));
-            
-            // Use try_read instead of blocking_read
-            match state.try_read() {
-                Ok(guard) => guard.get(key).cloned(),
-                Err(_) => None,
-            }
+            let guard = self.state.read().await;
+            guard.get(key).cloned()
         })
     }
 
@@ -478,11 +475,8 @@ impl SimulatorImpl {
             // Implementation for delete_state
             println!("Deleting state: {}", hex::encode(key));
             
-            // Use try_write instead of blocking_write
-            match self.state.try_write() {
-                Ok(mut guard) => guard.remove(key),
-                Err(_) => None,
-            }
+            let mut guard = self.state.write().await;
+            guard.remove(key)
         })
     }
 
@@ -506,89 +500,89 @@ impl SimulatorImpl {
             let alloc_typed = alloc.typed::<i32, i32>(&self.store)
                 .map_err(|e| e.to_string())?;
             println!("Typed allocate function");
-            let args_ptr = alloc_typed.call_async(&mut self.store, args.len() as i32)
+            let len = args.len() as i32;
+            let ptr = alloc_typed.call_async(&mut self.store, len)
                 .await
                 .map_err(|e| e.to_string())?;
-            println!("Called allocate function: {}", args_ptr);
+            println!("Allocated {} bytes at pointer {}", len, ptr);
 
-            // Write the arguments to memory
-            let memory = self.instance.get_memory(&mut self.store, "memory")
+            // Copy the arguments to the WASM memory
+            let mem = self.instance.get_memory(&mut self.store, "memory")
                 .ok_or_else(|| "memory not found".to_string())?;
             
             // Write the arguments to memory
-            memory.write(&mut self.store, args_ptr as usize, args)
+            mem.write(&mut self.store, ptr as usize, args)
                 .map_err(|e| e.to_string())?;
-            println!("Wrote arguments to memory");
+            println!("Copied arguments to memory");
 
-            // Get the function
+            // Call the method
             let func = self.instance.get_func(&mut self.store, method)
-                .ok_or_else(|| format!("function {} not found", method))?;
+                .ok_or_else(|| format!("function '{}' not found", method))?;
             let func_typed = func.typed::<i32, i32>(&self.store)
                 .map_err(|e| e.to_string())?;
             println!("Got function: {}", method);
 
             // Call the function
-            let result = func_typed.call_async(&mut self.store, args_ptr)
+            let result = func_typed.call_async(&mut self.store, ptr)
                 .await
                 .map_err(|e| e.to_string())?;
             println!("Called function: {} -> {}", method, result);
 
-            // Check if there was an error
+            // If the result is 0, an error occurred
             if result <= 0 {
-                return Err(format!("Contract execution failed with result {}", result));
+                return Err(format!("execution failed with result {}", result));
             }
 
-            // Get the result from the WASM memory
-            // The result is stored in a separate memory location by the set_call_result host function
-            // We need to read this location to get the actual result
-            
-            // Get the result pointer and length
-            let result_ptr = self.store.data().result_ptr;
-            let result_len = self.store.data().result_len;
-            
-            if result_ptr == 0 || result_len == 0 {
-                return Ok(Vec::new());
+            // Convert the result to bytes
+            let result_bytes = result.to_le_bytes();
+
+            // Try to free the allocated memory, but don't fail if deallocate is not found
+            if let Some(free) = self.instance.get_func(&mut self.store, "deallocate") {
+                if let Ok(free_typed) = free.typed::<(i32, i32), ()>(&self.store) {
+                    let _ = free_typed.call_async(&mut self.store, (ptr, len)).await;
+                    println!("Freed memory");
+                }
             }
-            
-            // Read the result from memory
-            let mut result_data = vec![0u8; result_len as usize];
-            memory.read(&self.store, result_ptr as usize, &mut result_data)
-                .map_err(|e| e.to_string())?;
-            
-            Ok(result_data)
+
+            Ok(result_bytes.to_vec())
         })
     }
 
-    fn remaining_fuel_async(&self) -> u64 {
-        // Use a default value instead of blocking
-        self.remaining_gas.try_read().map(|g| *g).unwrap_or(0)
+    fn remaining_fuel_async<'a>(&'a self) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
+        Box::pin(async move {
+            *self.remaining_gas.read().await
+        })
     }
 
-    fn get_events_async(&self) -> Vec<Event> {
-        // Use a default value instead of blocking
-        match self.event_log.try_read() {
-            Ok(guard) => guard.events().iter().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+    fn get_events_async<'a>(&'a self) -> Pin<Box<dyn Future<Output = Vec<Event>> + Send + 'a>> {
+        Box::pin(async move {
+            self.event_log.read().await.events().iter().cloned().collect()
+        })
     }
 }
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 impl Simulator for SimulatorImpl {
     fn get_balance(&self, account: &WasmlAddress) -> u64 {
-        self.balances.blocking_read().get(account).copied().unwrap_or(0)
+        // Use try_read instead of blocking_read to avoid panics in async contexts
+        self.balances.try_read().map(|balances| balances.get(account).copied().unwrap_or(0)).unwrap_or(0)
     }
 
     fn set_balance(&mut self, account: &WasmlAddress, balance: u64) {
-        self.balances.blocking_write().insert(account.clone(), balance);
+        // Use try_write instead of blocking_write to avoid panics in async contexts
+        if let Ok(mut balances) = self.balances.try_write() {
+            balances.insert(account.clone(), balance);
+        }
     }
 
     fn remaining_fuel(&self) -> u64 {
-        self.remaining_gas.blocking_read().clone()
+        // Use try_read instead of blocking_read
+        self.remaining_gas.try_read().map(|gas| *gas).unwrap_or(0)
     }
 
     fn get_events(&self) -> Vec<Event> {
-        self.event_log.blocking_read().events().iter().cloned().collect()
+        // Use try_read instead of blocking_read
+        self.event_log.try_read().map(|log| log.events().iter().cloned().collect()).unwrap_or_else(|_| Vec::new())
     }
 }
 
@@ -597,13 +591,13 @@ impl Simulator for SimulatorImpl {
 impl SimulatorExt for SimulatorImpl {
     fn get_balance_async<'a>(&'a self, account: &'a WasmlAddress) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
         Box::pin(async move {
-            self.get_balance(account)
+            self.balances.read().await.get(account).copied().unwrap_or(0)
         })
     }
 
     fn set_balance_async<'a>(&'a mut self, account: &'a WasmlAddress, balance: u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            self.set_balance(account, balance)
+            self.balances.write().await.insert(account.clone(), balance);
         })
     }
 
@@ -611,7 +605,7 @@ impl SimulatorExt for SimulatorImpl {
         Box::pin(async move {
             // Implementation for store_state
             println!("Storing state: {}", hex::encode(key));
-            let mut guard = self.state.blocking_write();
+            let mut guard = self.state.write().await;
             guard.insert(key.to_vec(), value.to_vec());
         })
     }
@@ -620,12 +614,8 @@ impl SimulatorExt for SimulatorImpl {
         Box::pin(async move {
             // Implementation for get_state
             println!("Getting state: {}", hex::encode(key));
-            
-            // Use try_read instead of blocking_read
-            match self.state.try_read() {
-                Ok(guard) => guard.get(key).cloned(),
-                Err(_) => None,
-            }
+            let guard = self.state.read().await;
+            guard.get(key).cloned()
         })
     }
 
@@ -634,11 +624,8 @@ impl SimulatorExt for SimulatorImpl {
             // Implementation for delete_state
             println!("Deleting state: {}", hex::encode(key));
             
-            // Use try_write instead of blocking_write
-            match self.state.try_write() {
-                Ok(mut guard) => guard.remove(key),
-                Err(_) => None,
-            }
+            let mut guard = self.state.write().await;
+            guard.remove(key)
         })
     }
 
@@ -663,7 +650,8 @@ impl SimulatorExt for SimulatorImpl {
                 .map_err(|e| e.to_string())?;
 
             let len = args.len() as i32;
-            let ptr = alloc_typed.call(&mut self.store, len)
+            let ptr = alloc_typed.call_async(&mut self.store, len)
+                .await
                 .map_err(|e| e.to_string())?;
             println!("Allocated {} bytes at pointer {}", len, ptr);
 
@@ -677,72 +665,48 @@ impl SimulatorExt for SimulatorImpl {
             println!("Copied arguments to memory");
 
             // Call the method
-            let exec = self.instance.get_func(&mut self.store, "execute")
+            let func = self.instance.get_func(&mut self.store, method)
                 .ok_or_else(|| format!("function '{}' not found", method))?;
-            println!("Got execute function");
-            let exec_typed = exec.typed::<(i32, i32, i32, i32), i32>(&self.store)
+            let func_typed = func.typed::<i32, i32>(&self.store)
                 .map_err(|e| e.to_string())?;
+            println!("Got function: {}", method);
 
-            // Convert method name to bytes
-            let method_bytes = method.as_bytes();
-            let method_len = method_bytes.len() as i32;
-            let method_ptr = alloc_typed.call(&mut self.store, method_len)
+            // Call the function
+            let result = func_typed.call_async(&mut self.store, ptr)
+                .await
                 .map_err(|e| e.to_string())?;
-            mem.write(&mut self.store, method_ptr as usize, method_bytes)
-                .map_err(|e| e.to_string())?;
-            println!("Copied method name to memory");
-
-            // Execute the method
-            let result_ptr = exec_typed.call(&mut self.store, (method_ptr, method_len, ptr, len))
-                .map_err(|e| e.to_string())?;
-            println!("Executed method, got result pointer: {}", result_ptr);
+            println!("Called function: {} -> {}", method, result);
 
             // If the result is 0, an error occurred
-            if result_ptr == 0 {
-                return Err("execution failed".to_string());
+            if result <= 0 {
+                return Err(format!("execution failed with result {}", result));
             }
 
-            // Read the result from memory
-            // First 4 bytes are the length
-            let mut len_bytes = [0u8; 4];
-            mem.read(&self.store, result_ptr as usize, &mut len_bytes)
-                .map_err(|e| e.to_string())?;
-            let result_len = i32::from_le_bytes(len_bytes) as usize;
-            println!("Result length: {}", result_len);
+            // Convert the result to bytes
+            let result_bytes = result.to_le_bytes();
 
-            // Then the data
-            let mut result = vec![0u8; result_len];
-            mem.read(&self.store, (result_ptr + 4) as usize, &mut result)
-                .map_err(|e| e.to_string())?;
-            println!("Read result data");
+            // Try to free the allocated memory, but don't fail if deallocate is not found
+            if let Some(free) = self.instance.get_func(&mut self.store, "deallocate") {
+                if let Ok(free_typed) = free.typed::<(i32, i32), ()>(&self.store) {
+                    let _ = free_typed.call_async(&mut self.store, (ptr, len)).await;
+                    println!("Freed memory");
+                }
+            }
 
-            // Free the memory
-            let free = self.instance.get_func(&mut self.store, "deallocate")
-                .ok_or_else(|| "deallocate function not found".to_string())?;
-            let free_typed = free.typed::<(i32, i32), ()>(&self.store)
-                .map_err(|e| e.to_string())?;
-            free_typed.call(&mut self.store, (ptr, len))
-                .map_err(|e| e.to_string())?;
-            free_typed.call(&mut self.store, (method_ptr, method_len))
-                .map_err(|e| e.to_string())?;
-            free_typed.call(&mut self.store, (result_ptr, (4 + result_len) as i32))
-                .map_err(|e| e.to_string())?;
-            println!("Freed memory");
-
-            Ok(result)
+            Ok(result_bytes.to_vec())
         })
     }
 
-    fn remaining_fuel_async(&self) -> u64 {
-        self.remaining_gas.try_read().map(|g| *g).unwrap_or(0)
+    fn remaining_fuel_async<'a>(&'a self) -> Pin<Box<dyn Future<Output = u64> + Send + 'a>> {
+        Box::pin(async move {
+            *self.remaining_gas.read().await
+        })
     }
 
-    fn get_events_async(&self) -> Vec<Event> {
-        // Use a default value instead of blocking
-        match self.event_log.try_read() {
-            Ok(guard) => guard.events().iter().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+    fn get_events_async<'a>(&'a self) -> Pin<Box<dyn Future<Output = Vec<Event>> + Send + 'a>> {
+        Box::pin(async move {
+            self.event_log.read().await.events().iter().cloned().collect()
+        })
     }
 }
 
@@ -799,8 +763,10 @@ mod tests {
         let result = simulator.execute(&actor, &[], "always_true", &args, 1_000_000).await;
         assert!(result.is_ok());
         
-        // Test remaining fuel
-        assert_eq!(simulator.remaining_fuel_async(), 0);
+        // Test remaining fuel and events
+        assert_eq!(simulator.remaining_fuel_async().await, 0);
+        let events = simulator.get_events_async().await;
+        assert!(events.is_empty());
     }
 
     #[tokio::test]
@@ -917,7 +883,7 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_state_conflicts() {
         let simulator = Arc::new(RwLock::new(SimulatorImpl::new().await));
-        let actor = WasmlAddress::new([0u8; 32]);
+        let actor = simulator.read().await.store.data().actor.clone();
         
         // Setup initial state
         {
