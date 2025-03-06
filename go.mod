@@ -1,6 +1,6 @@
 module github.com/ava-labs/hypersdk
 
-go 1.22.8
+go 1.22.12
 
 require (
 	github.com/ava-labs/avalanchego v1.11.13-0.20241230212828-6dea1b366756

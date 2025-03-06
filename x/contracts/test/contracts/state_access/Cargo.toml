@@ -12,7 +12,7 @@ test = ["wasmlanche/test"]
 
 [dependencies]
 wasmlanche = { workspace = true, features = ["debug"] }
-sdk-macros = { path = "../../../sdk-macros" }
+sdk_macros = { package = "sdk-macros", path = "../../../sdk-macros" }
 
 [dev-dependencies]
 wasmlanche = { workspace = true, features = ["debug", "test"] }
