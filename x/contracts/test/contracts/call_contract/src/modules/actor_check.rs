@@ -31,6 +31,16 @@ pub fn actor_check(context: &mut Context) -> WasmlAddress {
         
         let msg = alloc::format!("ACTOR_CHECK_MODULE: store_state result: {}", store_result).into_bytes();
         trace(msg.as_ptr(), msg.len());
+        
+        // Debug information about the actor address
+        let addr_bytes = context.actor.as_bytes();
+        let hex_addr = addr_bytes.iter()
+            .map(|b| alloc::format!("{:02x}", b))
+            .collect::<alloc::vec::Vec<_>>()
+            .join("");
+        
+        let msg = alloc::format!("ACTOR_CHECK_MODULE: actor address: {} (length: {})", hex_addr, addr_bytes.len()).into_bytes();
+        trace(msg.as_ptr(), msg.len());
     }
     
     // Return the actual actor address from the context
@@ -39,7 +49,7 @@ pub fn actor_check(context: &mut Context) -> WasmlAddress {
 
 // Non-async export that the Go test expects
 #[public]
-pub fn actor_check_external(ctx: &mut Context, target: WasmlAddress, max_units: u64) -> WasmlAddress {
+pub fn actor_check_external(_ctx: &mut Context, target: WasmlAddress, max_units: u64) -> WasmlAddress {
     unsafe {
         extern "C" {
             fn trace(ptr: *const u8, len: usize) -> ();
@@ -63,11 +73,19 @@ pub fn actor_check_external(ctx: &mut Context, target: WasmlAddress, max_units: 
         let msg = alloc::format!("ACTOR_CHECK_EXTERNAL_MODULE: store_state result: {}", store_result).into_bytes();
         trace(msg.as_ptr(), msg.len());
         
-        let msg = alloc::format!("ACTOR_CHECK_EXTERNAL_MODULE: max_units: {}, returning target address", max_units).into_bytes();
+        // Log target address details
+        let addr_bytes = target.as_bytes();
+        let hex_addr = addr_bytes.iter()
+            .map(|b| alloc::format!("{:02x}", b))
+            .collect::<alloc::vec::Vec<_>>()
+            .join("");
+        
+        let msg = alloc::format!("ACTOR_CHECK_EXTERNAL_MODULE: target address: {} (length: {}), max_units: {}", 
+                               hex_addr, addr_bytes.len(), max_units).into_bytes();
         trace(msg.as_ptr(), msg.len());
     }
     
-    // Simply return the target address - this matches the test expectations
     // The test expects actor_check_external to return the target contract address
+    // The most reliable approach is to simply return the target address that was passed in
     target
 }

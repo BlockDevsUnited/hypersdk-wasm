@@ -8,7 +8,7 @@ use wasmlanche::Context;
 
 // Standard sync function - no macro
 pub fn simple_call(_: &mut Context) -> i64 {
-    0
+    0  // Return 0 to match the expected value in TestImportContractDeployContract
 }
 
 // The async function can still use the macro if needed
