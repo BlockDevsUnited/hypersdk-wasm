@@ -6,8 +6,8 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
-	"math/rand"
 	"slices"
 	"strconv"
 	"sync"
@@ -326,9 +326,47 @@ func NewEnvModule() *ImportModule {
 	return &ImportModule{
 		Name: "env",
 		HostFunctions: map[string]HostFunction{
+			"random_bytes": {
+				FuelCost: 20, // Moderate cost for generating random bytes
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+					// Extract pointer and length parameters
+					ptr := args[0].I32()
+					length := args[1].I32()
+					
+					// Get memory
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					memoryData := mem.UnsafeData(store)
+					
+					// Validate memory access
+					if int(ptr)+int(length) > len(memoryData) {
+						fmt.Printf("DEBUG: Memory access out of bounds in random_bytes - memory size: %d, requested: %d to %d\n", 
+							len(memoryData), ptr, ptr+length)
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					// Generate random bytes
+					randomBytes := make([]byte, length)
+					n, err := rand.Read(randomBytes)
+					if err != nil {
+						fmt.Printf("DEBUG: Error generating random bytes: %v\n", err)
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					if n != int(length) {
+						fmt.Printf("DEBUG: Error: Generated %d random bytes instead of %d\n", n, length)
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
+					
+					// Copy random bytes to WebAssembly memory
+					copy(memoryData[ptr:ptr+length], randomBytes)
+					
+					// Return success
+					return []wasmtime.Val{wasmtime.ValI32(0)}, nil
+				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
+			},
 			"set_call_result": {
 				FuelCost: 10, // Low cost for simple memory copying
-				Function: functionFromWasmVals(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
+				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
 					// Extract pointer and length from arguments
 					ptr := args[0].I32()
 					length := args[1].I32()
@@ -336,22 +374,12 @@ func NewEnvModule() *ImportModule {
 					// Ensure the pointer and length are valid
 					if ptr == 0 || length == 0 {
 						fmt.Printf("DEBUG: set_call_result received invalid pointer (%d) or length (%d)\n", ptr, length)
-						fmt.Println("DEBUG: Creating default address for debugging purposes")
-						
-						// Create a predictable 33-byte address for debugging purposes
-						// Format: [0] (type ID) + 32 bytes of [1]
-						defaultAddress := make([]byte, 33)
-						defaultAddress[0] = 0 // Type ID for contracts is 0
-						for i := 1; i < 33; i++ {
-							defaultAddress[i] = 1
-						}
-						callInfo.inst.result = defaultAddress
-						fmt.Printf("DEBUG: Force-setting result to default address (len=%d): %x\n", 
-							len(callInfo.inst.result), callInfo.inst.result)
+						// No need to create a default address now, just set empty result
+						callInfo.inst.result = []byte{}
 						return nil, nil
 					}
 					
-					// Get memory and read bytes
+					// Get memory
 					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
 					memoryData := mem.UnsafeData(store)
 					
@@ -359,56 +387,21 @@ func NewEnvModule() *ImportModule {
 					if int(ptr)+int(length) > len(memoryData) {
 						fmt.Printf("DEBUG: Memory access out of bounds - memory size: %d, requested: %d to %d\n", 
 							len(memoryData), ptr, ptr+length)
-						
-						// Create a predictable 33-byte address for debugging purposes
-						defaultAddress := make([]byte, 33)
-						defaultAddress[0] = 0 // Type ID for contracts is 0
-						for i := 1; i < 33; i++ {
-							defaultAddress[i] = 1
-						}
-						callInfo.inst.result = defaultAddress
-						fmt.Printf("DEBUG: Force-setting result to default address (len=%d): %x\n", 
-							len(callInfo.inst.result), callInfo.inst.result)
+						callInfo.inst.result = []byte{}
 						return nil, nil
 					}
 					
+					// Get data from memory
 					data := memoryData[ptr:ptr+length]
 					
 					// Debug print the data we're reading
 					fmt.Printf("DEBUG: set_call_result received %d bytes: %x\n", length, data)
 					
-					// Determine format based on data length
-					// U64 values are always exactly 8 bytes in little-endian format
-					// Addresses are either 33 bytes (full address with type ID) or 20 bytes (legacy)
-					if len(data) == 0 {
-						// Empty data - create a default address
-						fmt.Println("DEBUG: Empty data, using default address")
-						defaultAddress := make([]byte, 33)
-						defaultAddress[0] = 0 // Type ID for contracts is 0
-						for i := 1; i < 33; i++ {
-							defaultAddress[i] = 1
-						}
-						callInfo.inst.result = defaultAddress
-					} else if len(data) == 8 {
-						// Most likely a u64 value - preserve as is
-						fmt.Println("DEBUG: 8-byte data detected, preserving as u64")
-						callInfo.inst.result = slices.Clone(data)
-					} else if len(data) == 33 || len(data) == 20 {
-						// Standard address format - preserve as is
-						fmt.Println("DEBUG: Address format detected, preserving")
-						callInfo.inst.result = slices.Clone(data)
-					} else {
-						// Non-standard format, log but preserve as is
-						fmt.Printf("DEBUG: Non-standard data length (%d bytes), preserving original format\n", len(data))
-						callInfo.inst.result = slices.Clone(data)
-					}
+					// Store value in result buffer (with clone to avoid memory issues)
+					callInfo.inst.result = slices.Clone(data)
 					
-					// Debug print the stored result
-					fmt.Printf("DEBUG: Result bytes (len=%d): %x\n", len(callInfo.inst.result), callInfo.inst.result)
-					
-					// No return value for this function
 					return nil, nil
-				}),
+				}, []*wasmtime.ValType{typeI32, typeI32}, nil),
 			},
 			"get_state": {
 				FuelCost: 50, // Medium cost for state access
@@ -550,6 +543,10 @@ func NewEnvModule() *ImportModule {
 					valuePtr := args[2].I32()
 					valueLen := args[3].I32()
 					
+					// Get memory and read key and value bytes
+					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+					memoryData := mem.UnsafeData(store)
+					
 					// Debug: Print details about the key and value
 					fmt.Printf("STORE_STATE DEBUG: key ptr: %d, key len: %d, value ptr: %d, value len: %d\n", keyPtr, keyLen, valuePtr, valueLen)
 					
@@ -563,11 +560,22 @@ func NewEnvModule() *ImportModule {
 							fmt.Println("STORE_STATE: Using fallback key for empty key")
 							// Generate a random key as fallback
 							fallbackKey := make([]byte, 16)
-							rand.Read(fallbackKey)
+							n, err := rand.Read(fallbackKey)
+							if err != nil {
+								fmt.Printf("DEBUG: Error generating fallback key: %v\n", err)
+								return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+							}
+							if n != len(fallbackKey) {
+								fmt.Printf("DEBUG: Error generating fallback key: %d bytes generated instead of %d\n", n, len(fallbackKey))
+								return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+							}
 							
-							// Get memory and read value bytes
-							mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
+							// Store with the fallback key
+							ctx := context.Background()
+							stateObj := callInfo.State.GetContractState(callInfo.Contract)
+							fmt.Printf("DEBUG: Using fallback key: %x\n", fallbackKey)
 							
+							// Create empty value bytes if needed
 							var valueBytes []byte
 							if valueLen > 0 && valuePtr > 0 {
 								valueBytes = make([]byte, valueLen)
@@ -576,101 +584,66 @@ func NewEnvModule() *ImportModule {
 								if uint64(valuePtr)+uint64(valueLen) <= uint64(memSize) {
 									copy(valueBytes, mem.UnsafeData(store)[valuePtr:valuePtr+valueLen])
 								} else {
-									fmt.Println("STORE_STATE ERROR: Value memory access out of bounds")
+									fmt.Println("DEBUG: Value memory access out of bounds")
 									return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
 								}
 							} else {
 								valueBytes = []byte{}
 							}
 							
-							// Store with the fallback key
-							ctx := context.Background()
-							stateObj := callInfo.State.GetContractState(callInfo.Contract)
-							fmt.Printf("STORE_STATE: Using fallback key: %x\n", fallbackKey)
-							err := stateObj.Insert(ctx, fallbackKey, valueBytes)
+							err = stateObj.Insert(ctx, fallbackKey, valueBytes)
 							if err != nil {
-								fmt.Printf("STORE_STATE ERROR with fallback key: %s\n", err.Error())
+								fmt.Printf("DEBUG: Error with fallback key: %s\n", err.Error())
 								return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
 							}
 							
-							fmt.Println("STORE_STATE SUCCESS: Used fallback key to store data")
+							fmt.Println("DEBUG: Successfully stored data with fallback key")
 							return []wasmtime.Val{wasmtime.ValI32(0)}, nil
 						}
 						
+						// Return error for invalid value pointer or length
 						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
 					}
 					
-					// Get memory and read key and value bytes
-					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
-					
-					// Ensure memory size is sufficient
-					memSize := mem.DataSize(store)
-					fmt.Printf("STORE_STATE DEBUG: Memory size: %d\n", memSize)
-					
-					// Check memory bounds - convert memSize to uint64 for comparison
-					memSizeU64 := uint64(memSize)
-					if uint64(keyPtr)+uint64(keyLen) > memSizeU64 || (valuePtr > 0 && uint64(valuePtr)+uint64(valueLen) > memSizeU64) {
-						fmt.Printf("STORE_STATE ERROR: Memory access out of bounds: keyPtr+keyLen=%d, valuePtr+valueLen=%d, memSize=%d\n", 
-							uint64(keyPtr)+uint64(keyLen), uint64(valuePtr)+uint64(valueLen), memSizeU64)
+					// Check memory bounds
+					if int(keyPtr)+int(keyLen) > len(memoryData) || int(valuePtr)+int(valueLen) > len(memoryData) {
+						fmt.Printf("DEBUG: Memory access out of bounds - memory size: %d, requested key: %d to %d, value: %d to %d\n", 
+							len(memoryData), keyPtr, keyPtr+keyLen, valuePtr, valuePtr+valueLen)
 						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
 					}
 					
-					var keyBytes []byte
-					var valueBytes []byte
+					// Safely extract key and value bytes with additional protections
+					keyBytes := make([]byte, keyLen)
+					copy(keyBytes, memoryData[keyPtr:keyPtr+keyLen])
 					
-					// Use a defer and recover to handle potential panics from unsafe memory access
-					defer func() {
-						if r := recover(); r != nil {
-							fmt.Printf("STORE_STATE PANIC: Recovered from panic: %v\n", r)
-						}
-					}()
+					valueBytes := make([]byte, valueLen)
+					copy(valueBytes, memoryData[valuePtr:valuePtr+valueLen])
 					
-					// Extract key bytes safely
-					keyBytes = make([]byte, keyLen)
-					copy(keyBytes, mem.UnsafeData(store)[keyPtr:keyPtr+keyLen])
-					
-					// Add a prefix and random bytes if the key is empty or too short (failsafe)
+					// Extensive empty key checking
 					if len(keyBytes) == 0 || len(bytes.TrimLeft(keyBytes, "\x00")) == 0 {
-						// Generate a random key
-						randomKey := make([]byte, 16)
-						rand.Read(randomKey)
-						// Add a prefix to clearly identify it as a generated key
-						keyBytes = append([]byte("gen_key_"), randomKey...)
-						fmt.Printf("STORE_STATE WARNING: Empty key replaced with generated key: %x\n", keyBytes)
-					}
-					
-					// Extract value bytes safely
-					if valueLen > 0 {
-						valueBytes = make([]byte, valueLen)
-						copy(valueBytes, mem.UnsafeData(store)[valuePtr:valuePtr+valueLen])
-					} else {
-						valueBytes = []byte{}
-					}
-					
-					fmt.Printf("STORE_STATE DEBUG: key bytes (hex): %x (length: %d)\n", keyBytes, len(keyBytes))
-					fmt.Printf("STORE_STATE DEBUG: value bytes (hex): %x (length: %d)\n", valueBytes, len(valueBytes))
-					
-					if len(keyBytes) == 0 {
-						fmt.Println("STORE_STATE ERROR: Empty key detected before state insertion (this should never happen)")
+						// Instead of recovering silently, fail explicitly so contracts will fix the issue
+						fmt.Println("DEBUG: Empty key received, rejecting request")
 						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
 					}
+					
+					// Log the key and value bytes for debugging
+					fmt.Printf("DEBUG: key bytes (hex): %x (length: %d)\n", keyBytes, len(keyBytes))
+					fmt.Printf("DEBUG: value bytes (hex): %x (length: %d)\n", valueBytes, len(valueBytes))
 					
 					// Store in state
 					ctx := context.Background()
 					stateObj := callInfo.State.GetContractState(callInfo.Contract)
-					
-					fmt.Printf("STORE_STATE DEBUG: Contract address: %x (length: %d)\n", callInfo.Contract, len(callInfo.Contract))
+					fmt.Printf("DEBUG: Contract address: %x (length: %d)\n", callInfo.Contract, len(callInfo.Contract))
 					
 					err := stateObj.Insert(ctx, keyBytes, valueBytes)
-					
 					if err != nil {
 						// Return -1 to indicate error
-						fmt.Printf("STORE_STATE ERROR: %s\n", err.Error())
+						fmt.Printf("DEBUG: Error: %s\n", err.Error())
 						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
 					}
 					
-					// Return 0 to indicate success
-					fmt.Println("STORE_STATE SUCCESS: Data stored successfully")
+					// Return success
+					fmt.Println("DEBUG: Successfully stored data")
 					return []wasmtime.Val{wasmtime.ValI32(0)}, nil
 				}, []*wasmtime.ValType{typeI32, typeI32, typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
 			},
@@ -705,8 +678,15 @@ func NewEnvModule() *ImportModule {
 					initPtr := args[2].I32()
 					initLen := args[3].I32()
 					
-					fmt.Printf("DEPLOY_CONTRACT DEBUG: code ptr: %d, code len: %d, init ptr: %d, init len: %d\n", 
+					fmt.Printf("DEPLOY_CONTRACT DEBUG: code ptr: %d, len: %d, init ptr: %d, len: %d\n", 
 						codePtr, codeLen, initPtr, initLen)
+					
+					// CRITICAL CHECK: Ensure pointers and lengths are valid
+					if codePtr == 0 || codeLen <= 0 || initPtr == 0 || initLen <= 0 {
+						fmt.Printf("DEPLOY_CONTRACT ERROR: Invalid pointers or lengths: codePtr=%d, codeLen=%d, initPtr=%d, initLen=%d\n", 
+							codePtr, codeLen, initPtr, initLen)
+						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
+					}
 					
 					// Get memory
 					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
@@ -781,8 +761,9 @@ func NewEnvModule() *ImportModule {
 					
 					// Get memory and read key and value bytes
 					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
-					keyBytes := mem.UnsafeData(store)[keyPtr:keyPtr+keyLen]
-					valueBytes := mem.UnsafeData(store)[valuePtr:valuePtr+valueLen]
+					memoryData := mem.UnsafeData(store)
+					keyBytes := memoryData[keyPtr:keyPtr+keyLen]
+					valueBytes := memoryData[valuePtr:valuePtr+valueLen]
 					
 					// Generate an operation ID
 					opID := atomic.AddInt64(&opCounter, 1)
@@ -896,32 +877,6 @@ func NewEnvModule() *ImportModule {
 					[]*wasmtime.ValType{typeI64},
 				),
 			},
-			"random_bytes": {
-				FuelCost: 30, // Medium cost for generating random data
-				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
-					// Extract pointer and length
-					ptr := args[0].I32()
-					length := args[1].I32()
-					
-					// Get memory
-					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
-					
-					// Generate deterministic random bytes based on operation counter
-					// This is deterministic to ensure reproducibility in tests
-					randomSource := rand.New(rand.NewSource(atomic.LoadInt64(&opCounter)))
-					randomBytes := make([]byte, length)
-					_, err := randomSource.Read(randomBytes)
-					if err != nil {
-						return []wasmtime.Val{wasmtime.ValI32(0)}, nil
-					}
-					
-					// Copy to WebAssembly memory
-					copy(mem.UnsafeData(store)[ptr:ptr+length], randomBytes)
-					
-					// Return the length of random bytes
-					return []wasmtime.Val{wasmtime.ValI32(int32(length))}, nil
-				}, []*wasmtime.ValType{typeI32, typeI32}, []*wasmtime.ValType{typeI32}),
-			},
 			"store_async_result": {
 				FuelCost: 50, // Medium cost for storing result
 				Function: functionFromWasmValsWithType(func(store *wasmtime.Store, callInfo *CallInfo, args []wasmtime.Val) ([]wasmtime.Val, error) {
@@ -1028,8 +983,8 @@ func NewEnvModule() *ImportModule {
 					fmt.Printf("EXECUTE_CONTRACT: Memory size: %d bytes\n", memSize)
 					
 					// Validate memory bounds before accessing
-					if uint64(contract_ptr) + uint64(contract_len) > uint64(memSize) ||
-					   uint64(function_name_ptr) + uint64(function_name_len) > uint64(memSize) {
+					if uint64(contract_ptr)+uint64(contract_len) > uint64(memSize) ||
+					   uint64(function_name_ptr)+uint64(function_name_len) > uint64(memSize) {
 						fmt.Printf("EXECUTE_CONTRACT ERROR: Memory access out of bounds\n")
 						return []wasmtime.Val{wasmtime.ValI32(-1)}, nil
 					}
@@ -1115,7 +1070,7 @@ func NewEnvModule() *ImportModule {
 						// Try with direct state access
 						stateObj := callInfo.State.GetContractState(callInfo.Contract)
 						contractIDBytes, err := stateObj.GetValue(ctx, accountKey)
-						if err != nil || len(contractIDBytes) != 32 {
+						if err != nil {
 							fmt.Printf("EXECUTE_CONTRACT: Direct state lookup failed or invalid ID length: %v, length: %d\n", 
 								err, len(contractIDBytes))
 							
@@ -1262,31 +1217,33 @@ func NewEnvModule() *ImportModule {
 					mem := callInfo.inst.inst.GetExport(store, "memory").Memory()
 					memoryData := mem.UnsafeData(store)
 					
-					// Read target address from memory
-					if to_ptr == 0 || to_len <= 0 {
-						fmt.Printf("TRANSFER_BALANCE ERROR: Invalid address pointer or length\n")
-						return []wasmtime.Val{wasmtime.ValI64(-1)}, nil
-					}
-					
-					toAddrBytes := memoryData[to_ptr:to_ptr+to_len]
-					fmt.Printf("TRANSFER_BALANCE: Target address bytes: %x (length: %d)\n", toAddrBytes, to_len)
-					
-					// Convert to codec.Address format
+					// If empty address is provided, use the caller's contract address
 					var targetAddr codec.Address
-					if len(toAddrBytes) == 33 {
-						// Standard format with type ID
-						typeID := toAddrBytes[0]
-						var idBytes [32]byte
-						copy(idBytes[:], toAddrBytes[1:33])
-						targetAddr = codec.CreateAddress(typeID, ids.ID(idBytes))
-					} else if len(toAddrBytes) == 32 {
-						// Just ID bytes, assume type 0 (contract)
-						var idBytes [32]byte
-						copy(idBytes[:], toAddrBytes)
-						targetAddr = codec.CreateAddress(0, ids.ID(idBytes))
+					if to_len == 0 {
+						// Use current contract (self) address
+						targetAddr = callInfo.Contract
+						fmt.Printf("TRANSFER_BALANCE: Using caller's contract address: %x\n", targetAddr)
 					} else {
-						fmt.Printf("TRANSFER_BALANCE ERROR: Invalid target address length: %d\n", len(toAddrBytes))
-						return []wasmtime.Val{wasmtime.ValI64(-1)}, nil
+						// Read address bytes from memory
+						toAddrBytes := memoryData[to_ptr:to_ptr+to_len]
+						fmt.Printf("TRANSFER_BALANCE: Target address bytes: %x (length: %d)\n", toAddrBytes, to_len)
+						
+						// Convert to codec.Address format
+						if len(toAddrBytes) == 33 {
+							// Standard format with type ID
+							typeID := toAddrBytes[0]
+							var idBytes [32]byte
+							copy(idBytes[:], toAddrBytes[1:33])
+							targetAddr = codec.CreateAddress(typeID, ids.ID(idBytes))
+						} else if len(toAddrBytes) == 32 {
+							// Just ID bytes, assume type 0 (contract)
+							var idBytes [32]byte
+							copy(idBytes[:], toAddrBytes)
+							targetAddr = codec.CreateAddress(0, ids.ID(idBytes))
+						} else {
+							fmt.Printf("TRANSFER_BALANCE ERROR: Invalid target address length: %d\n", len(toAddrBytes))
+							return []wasmtime.Val{wasmtime.ValI64(-1)}, nil
+						}
 					}
 					
 					// Transfer balance from current contract to target

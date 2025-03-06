@@ -68,7 +68,10 @@ func NewContractModule(r *WasmRuntime) *ImportModule {
 					return Err[RawBytes, ContractCallErrorCode](OutOfFuel), nil //nolint:nilerr
 				}
 
-				newInfo.Actor = callInfo.Contract
+				// Only set Actor field if it's not already set
+				if newInfo.Actor == [33]byte{} {
+					newInfo.Actor = callInfo.Contract
+				}
 				newInfo.Contract = input.Contract
 				newInfo.FunctionName = input.FunctionName
 				newInfo.Params = input.Params

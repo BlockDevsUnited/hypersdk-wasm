@@ -29,12 +29,26 @@ func (c CallContext) createCallInfo(callInfo *CallInfo) (*CallInfo, error) {
 	newCallInfo := *callInfo
 	resultInfo := reflect.ValueOf(&newCallInfo)
 	defaults := reflect.ValueOf(c.defaultCallInfo)
+	
 	for i := 0; i < defaults.NumField(); i++ {
+		fieldName := callInfoTypeInfo.Field(i).Name
 		defaultField := defaults.Field(i)
+		
+		// Special handling for Actor and Fuel fields in cross-contract calls
+		if fieldName == "Actor" || fieldName == "Fuel" {
+			// If the field is not set in the new call info, use the default
+			resultField := resultInfo.Elem().Field(i)
+			if resultField.IsZero() {
+				resultField.Set(defaultField)
+			}
+			// If the field is already set in the new call info, that's fine - we'll use that value
+			continue
+		}
+		
 		if !defaultField.IsZero() {
 			resultField := resultInfo.Elem().Field(i)
 			if !resultField.IsZero() {
-				return nil, fmt.Errorf("%w %s", errCannotOverwrite, callInfoTypeInfo.Field(i).Name)
+				return nil, fmt.Errorf("%w %s", errCannotOverwrite, fieldName)
 			}
 			resultField.Set(defaultField)
 		}

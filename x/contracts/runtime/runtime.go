@@ -30,6 +30,9 @@ type WasmRuntime struct {
 	linker     *wasmtime.Linker
 	limits     ResourceLimits
 	callInfo   atomic.Value // Used to store current CallInfo for tests
+	
+	// AsyncStateManager manages async operations across transactions
+	asyncStateManager *AsyncStateManager
 }
 
 type StateManager interface {
@@ -111,6 +114,8 @@ func NewRuntime(
 			return len(id) + len(bytes)
 		}),
 		limits: DefaultResourceLimits(),
+		// Initialize the async state manager
+		asyncStateManager: NewAsyncStateManager(),
 	}
 	
 	// Initialize the atomic value (it will be empty until explicitly set)
@@ -122,6 +127,9 @@ func NewRuntime(
 	hostImports.AddModule(NewBalanceModule())
 	hostImports.AddModule(NewStateAccessModule())
 	hostImports.AddModule(NewEnvModule())
+	
+	// Register the async module
+	RegisterAsyncModule(runtime, hostImports)
 
 	linker, err := hostImports.createLinker(runtime)
 	if err != nil {
@@ -275,4 +283,14 @@ func (r *WasmRuntime) envGetCallValue() uint64 {
 		return callInfo.Value
 	}
 	return 0 // Default to 0 if no callInfo is available
+}
+
+// GetAsyncStateManager returns the AsyncStateManager used by this runtime.
+// This is primarily used for testing purposes.
+func (r *WasmRuntime) GetAsyncStateManager() *AsyncStateManager {
+	// Return the actual AsyncStateManager instance
+	if r.asyncStateManager == nil {
+		r.asyncStateManager = NewAsyncStateManager()
+	}
+	return r.asyncStateManager
 }
