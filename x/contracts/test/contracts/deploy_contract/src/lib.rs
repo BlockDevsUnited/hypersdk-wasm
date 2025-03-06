@@ -6,5 +6,5 @@ use wasmlanche::{Context, types::{ContractId, WasmlAddress}};
 
 #[public]
 pub async fn deploy(ctx: &mut Context, contract_id: ContractId) -> WasmlAddress {
-    ctx.deploy(contract_id).await.unwrap()
+    ctx.deploy(&contract_id).await.unwrap()
 }

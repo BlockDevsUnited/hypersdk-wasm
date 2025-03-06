@@ -4,17 +4,34 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["lib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
+default = ["wasm"]
+wasm = []
 bindings = ["wasmlanche/bindings"]
-test = ["wasmlanche/test"]
+test = ["wasmlanche/test", "wasmlanche/simulator"]
+simulator = ["wasmlanche/simulator", "wasmlanche/std"]
+futures_executor = []
 
 [dependencies]
-wasmlanche = { workspace = true, features = ["debug"] }
+sdk-macros = { path = "../../../sdk-macros" }
+wasmlanche = { workspace = true, default-features = false, features = ["wasm", "debug"] }
+borsh = { version = "0.10.3", default-features = false }
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wee_alloc = "0.4"
 
 [dev-dependencies]
-wasmlanche = { workspace = true, features = ["debug", "test"] }
+wasmlanche = { workspace = true, features = ["debug", "test", "std", "simulator"] }
 
 [build-dependencies]
 wasmlanche-build = { path = "../../../wasmlanche-build" }
+
+[profile.release]
+lto = true
+opt-level = 's'
+overflow-checks = true
+panic = 'abort'
+strip = true
