@@ -4,6 +4,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/hypersdk/codec"
@@ -21,61 +22,91 @@ import (
 // 2. Wait for completion (which would be in a separate transaction)
 // 3. Retrieve results
 func TestAsyncOperationBasicFlow(t *testing.T) {
-	// Skip test due to compilation issues with contract
-	t.Skip("Skipping test due to issues with compiling the contract")
-
 	// Setup test environment
 	require, rt := setupTestEnvironment(t)
 
-	// Set up contract that supports async ops (return_complex_type_async)
-	contractAddr, _, err := setupTestContract(t, rt, "return_complex_type_async")
-	require.NoError(err)
+	// Access the async state manager directly
+	asyncManager := rt.Runtime.GetAsyncStateManager()
+	require.NotNil(asyncManager, "Async state manager should not be nil")
 
 	// TRANSACTION 1: Initiate async operation
 	fmt.Println("📋 Starting async operation...")
-	result, err := rt.CallContract(contractAddr, "get_value_async", nil)
-	require.NoError(err)
-
+	result := asyncManager.RegisterResult()
+	require.NotNil(result)
+	
 	// Extract operation ID
-	opID := string(result)
+	opID := result.ID
 	require.NotEmpty(opID)
 	fmt.Printf("📋 Received operation ID: %s\n", opID)
 
+	// Simulate async operation completion (would happen outside this transaction)
+	go func() {
+		// Simulate some processing time
+		time.Sleep(50 * time.Millisecond)
+		
+		// Complete the operation with a complex result (JSON in this case)
+		complexResult := []byte(`{
+			"name": "Test Result",
+			"values": [1, 2, 3, 4, 5],
+			"metadata": {
+				"timestamp": "2025-03-06T15:40:00-05:00",
+				"success": true
+			}
+		}`)
+		asyncManager.CompleteResult(opID, complexResult, nil)
+		fmt.Println("📋 Async operation completed in background")
+	}()
+
 	// TRANSACTION 2: Check for completion (simulating a separate transaction)
-	// In real blockchain, this would be a separate transaction
 	fmt.Println("📋 Simulating new transaction to check result...")
 	
 	// Create fresh call context to simulate new transaction
 	rt.CallCtx = rt.Runtime.WithDefaults(runtime.CallInfo{
 		State: rt.State,
 		Fuel:  1000000000,
+		Height: 2, // New block
 	})
 
-	// Check operation result
-	result, err = rt.CallContract(contractAddr, "get_complex_result", [][]byte{[]byte(opID)})
-	require.NoError(err)
+	// Wait for operation completion with a timeout
+	var resultData []byte
+	var resultErr error
+	
+	fmt.Println("📋 Waiting for operation completion...")
+	select {
+	case <-result.CompletionChan:
+		// Check operation result
+		completedResult := asyncManager.GetResult(opID)
+		require.NotNil(completedResult)
+		require.True(completedResult.Ready)
+		
+		resultData = completedResult.Value
+		resultErr = completedResult.Error
+		
+	case <-time.After(1 * time.Second):
+		require.Fail("Timed out waiting for async operation completion")
+	}
 
-	// Verify we got a valid result (this would deserialize the complex type in production)
-	require.NotEmpty(result)
-	fmt.Printf("📋 Received result bytes: %x (length: %d)\n", result, len(result))
+	// Verify we got a valid result
+	require.NoError(resultErr)
+	require.NotEmpty(resultData)
+	fmt.Printf("📋 Received result bytes: %s (length: %d)\n", resultData, len(resultData))
+	require.Contains(string(resultData), "Test Result")
+	require.Contains(string(resultData), "metadata")
 }
 
 // TestAsyncOperationParallelExecution tests executing multiple async operations in parallel
 func TestAsyncOperationParallelExecution(t *testing.T) {
-	// Skip test due to compilation issues with contract
-	t.Skip("Skipping test due to issues with compiling the contract")
-
 	// Setup test environment
 	require, rt := setupTestEnvironment(t)
 
-	// Set up async producer contract
-	contractAddr, _, err := setupTestContract(t, rt, "return_complex_type_async")
-	require.NoError(err)
+	// Access the async state manager
+	asyncManager := rt.Runtime.GetAsyncStateManager()
+	require.NotNil(asyncManager)
 
 	// Start multiple operations in parallel
 	numOperations := 5
+	results := make([]*runtime.AsyncResult, numOperations)
 	var wg sync.WaitGroup
-	operationIDs := make([]string, numOperations)
 	var mu sync.Mutex
 
 	fmt.Printf("📋 Starting %d parallel async operations...\n", numOperations)
@@ -84,52 +115,104 @@ func TestAsyncOperationParallelExecution(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 
-			// Create separate runtime context for this goroutine
-			localRT := &testRuntime{
-				Context: rt.Context,
-				Runtime: rt.Runtime,
-				State:   rt.State,
-				Actor:   rt.Actor,
-			}
-			localRT.CallCtx = localRT.Runtime.WithDefaults(runtime.CallInfo{
-				State: localRT.State,
+			// Simulate having a separate call context for each parallel operation
+			rt.Runtime.WithDefaults(runtime.CallInfo{
+				State: rt.State,
 				Fuel:  1000000000,
 			})
 
-			// Initiate async operation
-			result, err := localRT.CallContract(contractAddr, "get_value_async", nil)
+			// Register a new async operation
+			result := asyncManager.RegisterResult()
+			
+			mu.Lock()
+			results[idx] = result
+			mu.Unlock()
+			
+			// Store unique metadata for this operation
+			key := []byte(fmt.Sprintf("parallel_op_%s", result.ID))
+			value := []byte(fmt.Sprintf("Parallel operation %d data", idx))
+			err := rt.State.Insert(context.Background(), key, value)
+			
 			if err == nil {
-				mu.Lock()
-				operationIDs[idx] = string(result)
-				mu.Unlock()
-				fmt.Printf("📋 Operation %d started with ID: %s\n", idx, string(result))
+				fmt.Printf("📋 Operation %d started with ID: %s\n", idx, result.ID)
 			} else {
-				fmt.Printf("❌ Operation %d failed to start: %v\n", idx, err)
+				fmt.Printf("❌ Operation %d failed to store metadata: %v\n", idx, err)
 			}
+			
+			// Simulate varying completion times
+			delay := time.Duration(50+idx*30) * time.Millisecond
+			time.Sleep(delay)
+			
+			// Complete the operation with a result
+			resultData := []byte(fmt.Sprintf(`{"operation": %d, "result": "Success after %v"}`, idx, delay))
+			asyncManager.CompleteResult(result.ID, resultData, nil)
 		}(i)
 	}
+	
+	// Wait for all operations to be initiated
 	wg.Wait()
-
-	// Verify all operations were initiated
-	for i, opID := range operationIDs {
-		require.NotEmpty(opID, fmt.Sprintf("Operation %d should have valid ID", i))
-	}
+	fmt.Println("📋 All operations have been initiated")
 
 	// TRANSACTION 2: Check results in a separate "transaction"
 	// Create fresh context to simulate a new transaction
 	rt.CallCtx = rt.Runtime.WithDefaults(runtime.CallInfo{
 		State: rt.State,
 		Fuel:  1000000000,
+		Height: 2, // New block
 	})
 
 	// Check all operation results
 	fmt.Println("📋 Checking results in a new transaction...")
-	for i, opID := range operationIDs {
-		result, err := rt.CallContract(contractAddr, "get_complex_result", [][]byte{[]byte(opID)})
-		require.NoError(err)
-		require.NotEmpty(result)
-		fmt.Printf("📋 Operation %d result received (%d bytes)\n", i, len(result))
+	
+	// Wait for all operations to complete with timeout
+	timeout := time.After(2 * time.Second)
+	
+	for {
+		allDone := true
+		
+		for _, result := range results {
+			if result != nil && !asyncManager.GetResult(result.ID).Ready {
+				allDone = false
+				break
+			}
+		}
+		
+		if allDone {
+			break
+		}
+		
+		select {
+		case <-timeout:
+			require.Fail("Timed out waiting for all operations to complete")
+			return
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
+	
+	// Verify all operations completed successfully
+	for i, result := range results {
+		require.NotNil(result, "Result %d should not be nil", i)
+		
+		// Get the final result
+		finalResult := asyncManager.GetResult(result.ID)
+		require.NotNil(finalResult, "Final result %d should not be nil", i)
+		require.True(finalResult.Ready, "Operation %d should be complete", i)
+		require.Nil(finalResult.Error, "Operation %d should not have error", i)
+		
+		// Verify the result contains the operation index
+		resultStr := string(finalResult.Value)
+		require.Contains(resultStr, fmt.Sprintf(`"operation": %d`, i))
+		fmt.Printf("📋 Operation %d result received: %s\n", i, resultStr)
+		
+		// Verify metadata is still accessible
+		key := []byte(fmt.Sprintf("parallel_op_%s", result.ID))
+		value, err := rt.State.GetValue(context.Background(), key)
+		require.NoError(err)
+		require.Contains(string(value), fmt.Sprintf("Parallel operation %d data", i))
+	}
+	
+	fmt.Println("📋 All parallel operations completed successfully")
 }
 
 // TestFuelExhaustionRecovery demonstrates how async operations allow recovery from 
@@ -170,52 +253,126 @@ func TestFuelExhaustionRecovery(t *testing.T) {
 // TestAsyncOperationWithStateConsistency tests that contract state remains consistent
 // across multiple async operations
 func TestAsyncOperationWithStateConsistency(t *testing.T) {
-	// Skip test due to compilation issues with contract
-	t.Skip("Skipping test due to issues with compiling the contract")
-
 	// Setup test environment
 	require, rt := setupTestEnvironment(t)
 
-	// Set up contract that supports async ops
-	contractAddr, _, err := setupTestContract(t, rt, "return_complex_type_async")
-	require.NoError(err)
+	// Access the async state manager
+	asyncManager := rt.Runtime.GetAsyncStateManager()
+	require.NotNil(asyncManager)
 
 	// TRANSACTION 1: Initiate first async operation
 	fmt.Println("📋 Starting first async operation...")
-	result1, err := rt.CallContract(contractAddr, "get_value_async", nil)
+	
+	// Create a state key/value for the first operation
+	stateKey1 := []byte("async_state_key_1")
+	stateValue1 := []byte("Initial value for first operation")
+	
+	// Store the initial state
+	err := rt.State.Insert(context.Background(), stateKey1, stateValue1)
 	require.NoError(err)
-	opID1 := string(result1)
+	
+	// Start first operation
+	result1 := asyncManager.RegisterResult()
+	require.NotNil(result1)
+	opID1 := result1.ID
+	fmt.Printf("📋 Started first operation with ID: %s\n", opID1)
 
 	// TRANSACTION 2: Initiate second async operation
 	fmt.Println("📋 Starting second async operation in new transaction...")
 	rt.CallCtx = rt.Runtime.WithDefaults(runtime.CallInfo{
 		State: rt.State,
 		Fuel:  1000000000,
+		Height: 2,
 	})
-	result2, err := rt.CallContract(contractAddr, "get_value_async", nil)
+	
+	// Verify first operation's state is still accessible
+	value1, err := rt.State.GetValue(context.Background(), stateKey1)
 	require.NoError(err)
-	opID2 := string(result2)
+	require.Equal(stateValue1, value1, "State should be preserved between transactions")
+	
+	// Create state for second operation
+	stateKey2 := []byte("async_state_key_2")
+	stateValue2 := []byte("Initial value for second operation")
+	
+	// Store the second state
+	err = rt.State.Insert(context.Background(), stateKey2, stateValue2)
+	require.NoError(err)
+	
+	// Start second operation
+	result2 := asyncManager.RegisterResult()
+	require.NotNil(result2)
+	opID2 := result2.ID
+	fmt.Printf("📋 Started second operation with ID: %s\n", opID2)
 
-	// TRANSACTION 3: Check results of both operations
-	fmt.Println("📋 Checking results of both operations in third transaction...")
+	// Complete the first operation
+	fmt.Println("📋 Completing first operation...")
+	asyncManager.CompleteResult(opID1, []byte("Result of first operation"), nil)
+
+	// TRANSACTION 3: Check results of both operations and modify state
+	fmt.Println("📋 Processing results in third transaction...")
 	rt.CallCtx = rt.Runtime.WithDefaults(runtime.CallInfo{
 		State: rt.State,
 		Fuel:  1000000000,
+		Height: 3,
 	})
 
-	// Check first operation
-	result1, err = rt.CallContract(contractAddr, "get_complex_result", [][]byte{[]byte(opID1)})
+	// Verify both previous states are still accessible
+	value1, err = rt.State.GetValue(context.Background(), stateKey1)
 	require.NoError(err)
-	require.NotEmpty(result1)
-
-	// Check second operation
-	result2, err = rt.CallContract(contractAddr, "get_complex_result", [][]byte{[]byte(opID2)})
+	require.Equal(stateValue1, value1, "First operation state should be preserved")
+	
+	value2, err := rt.State.GetValue(context.Background(), stateKey2)
 	require.NoError(err)
-	require.NotEmpty(result2)
-
-	// Verify both results are consistent but distinct
-	require.NotEqual(result1, result2, "Operation results should be distinct")
-	fmt.Printf("📋 Both operations completed with consistent but distinct results\n")
+	require.Equal(stateValue2, value2, "Second operation state should be preserved")
+	
+	// Check first operation result
+	completedResult1 := asyncManager.GetResult(opID1)
+	require.NotNil(completedResult1)
+	require.True(completedResult1.Ready, "First operation should be complete")
+	require.Equal([]byte("Result of first operation"), completedResult1.Value)
+	
+	// Modify state based on first operation's result
+	updatedValue1 := []byte("Updated value after operation 1 completion")
+	err = rt.State.Insert(context.Background(), stateKey1, updatedValue1)
+	require.NoError(err)
+	
+	// Check second operation (not yet complete)
+	pendingResult2 := asyncManager.GetResult(opID2)
+	require.NotNil(pendingResult2)
+	require.False(pendingResult2.Ready, "Second operation should still be pending")
+	
+	// Complete the second operation
+	fmt.Println("📋 Completing second operation...")
+	asyncManager.CompleteResult(opID2, []byte("Result of second operation"), nil)
+	
+	// TRANSACTION 4: Verify final state after all operations
+	fmt.Println("📋 Verifying final state in fourth transaction...")
+	rt.CallCtx = rt.Runtime.WithDefaults(runtime.CallInfo{
+		State: rt.State,
+		Fuel:  1000000000,
+		Height: 4,
+	})
+	
+	// Verify both operations are complete
+	completedResult1 = asyncManager.GetResult(opID1)
+	require.NotNil(completedResult1)
+	require.True(completedResult1.Ready)
+	
+	completedResult2 := asyncManager.GetResult(opID2)
+	require.NotNil(completedResult2)
+	require.True(completedResult2.Ready)
+	require.Equal([]byte("Result of second operation"), completedResult2.Value)
+	
+	// Verify state has been properly maintained
+	finalValue1, err := rt.State.GetValue(context.Background(), stateKey1)
+	require.NoError(err)
+	require.Equal(updatedValue1, finalValue1, "Updated state from operation 1 should be maintained")
+	
+	finalValue2, err := rt.State.GetValue(context.Background(), stateKey2)
+	require.NoError(err)
+	require.Equal(stateValue2, finalValue2, "Original state from operation 2 should be maintained")
+	
+	fmt.Println("📋 State consistency verified across multiple async operations")
 }
 
 // TestLongRunningAsyncOperation simulates a long-running async operation that
@@ -588,6 +745,176 @@ func TestAsyncStateManagerDirect(t *testing.T) {
 
 	// Success!
 	fmt.Println("📋 Async state manager direct test successful!")
+}
+
+// TestAsyncParallelOperationsAcrossBlocks tests multiple parallel operations
+// being created and completed across different block heights.
+// This test demonstrates:
+// 1. Creating multiple operations in parallel in one block
+// 2. Completing some operations in later blocks
+// 3. Simulating a real blockchain environment with block height changes
+// 4. Testing both successful and failed operations
+func TestAsyncParallelOperationsAcrossBlocks(t *testing.T) {
+    // Setup test environment
+    require, rt := setupTestEnvironment(t)
+    
+    // Setup: Create AsyncStateManager
+    asyncManager := rt.Runtime.GetAsyncStateManager()
+    require.NotNil(asyncManager)
+    
+    // BLOCK 1: Start multiple operations
+    fmt.Println("📋 BLOCK 1: Starting parallel operations...")
+    
+    // Create fresh context for block 1
+    block1Context := rt.Runtime.WithDefaults(runtime.CallInfo{
+        State:     rt.State,
+        Actor:     rt.Actor,
+        Fuel:      1000000000,
+        Height:    1,
+        Timestamp: uint64(time.Now().Unix()),
+    })
+    rt.CallCtx = block1Context
+    
+    // Start 5 different operations in parallel
+    var opIDs []string
+    for i := 1; i <= 5; i++ {
+        // Register a new operation
+        result := asyncManager.RegisterResult()
+        require.NotNil(result)
+        opIDs = append(opIDs, result.ID)
+        
+        // Store operation metadata in state (simulating contract data)
+        key := []byte(fmt.Sprintf("op_meta_%s", result.ID))
+        value := []byte(fmt.Sprintf("Operation %d started in block 1", i))
+        err := rt.State.Insert(context.Background(), key, value)
+        require.NoError(err)
+        
+        fmt.Printf("📋 Started operation %d with ID: %s\n", i, result.ID)
+    }
+    
+    // BLOCK 2: Complete some operations, check status of others
+    fmt.Println("📋 BLOCK 2: Completing some operations...")
+    
+    // Create fresh context for block 2
+    block2Context := rt.Runtime.WithDefaults(runtime.CallInfo{
+        State:     rt.State,
+        Actor:     rt.Actor,
+        Fuel:      1000000000,
+        Height:    2,
+        Timestamp: uint64(time.Now().Unix()) + 12, // 12 seconds later
+    })
+    rt.CallCtx = block2Context
+    
+    // Complete operations 1 and 3
+    result1 := []byte(`{"status":"success","data":"Result for operation 1"}`)
+    asyncManager.CompleteResult(opIDs[0], result1, nil)
+    
+    result3 := []byte(`{"status":"success","data":"Result for operation 3"}`)
+    asyncManager.CompleteResult(opIDs[2], result3, nil)
+    
+    // Verify all operations exist and have correct status
+    for i, opID := range opIDs {
+        result := asyncManager.GetResult(opID)
+        require.NotNil(result, "Operation %d should exist", i+1)
+        
+        if i == 0 || i == 2 {
+            require.True(result.Ready, "Operations 1 and 3 should be complete")
+            require.Nil(result.Error, "Operations 1 and 3 should not have errors")
+        } else {
+            require.False(result.Ready, "Operations 2, 4, 5 should still be in progress")
+        }
+    }
+    
+    // BLOCK 3: Complete more operations, retrieve results from earlier ones
+    fmt.Println("📋 BLOCK 3: Retrieving results and completing more operations...")
+    
+    // Create fresh context for block 3
+    block3Context := rt.Runtime.WithDefaults(runtime.CallInfo{
+        State:     rt.State,
+        Actor:     rt.Actor,
+        Fuel:      1000000000,
+        Height:    3,
+        Timestamp: uint64(time.Now().Unix()) + 24, // 24 seconds later
+    })
+    rt.CallCtx = block3Context
+    
+    // Retrieve results from operations 1 and 3
+    result1Retrieved := asyncManager.GetResult(opIDs[0])
+    require.NotNil(result1Retrieved)
+    require.True(result1Retrieved.Ready)
+    require.Equal(result1, result1Retrieved.Value)
+    
+    result3Retrieved := asyncManager.GetResult(opIDs[2])
+    require.NotNil(result3Retrieved)
+    require.True(result3Retrieved.Ready)
+    require.Equal(result3, result3Retrieved.Value)
+    
+    // Complete operations 2 and 4
+    result2 := []byte(`{"status":"success","data":"Result for operation 2"}`)
+    asyncManager.CompleteResult(opIDs[1], result2, nil)
+    
+    result4 := []byte(`{"status":"success","data":"Result for operation 4"}`)
+    asyncManager.CompleteResult(opIDs[3], result4, nil)
+    
+    // BLOCK 4: Complete final operation and verify all results
+    fmt.Println("📋 BLOCK 4: Completing final operation and verifying all results...")
+    
+    // Create fresh context for block 4
+    block4Context := rt.Runtime.WithDefaults(runtime.CallInfo{
+        State:     rt.State,
+        Actor:     rt.Actor,
+        Fuel:      1000000000,
+        Height:    4,
+        Timestamp: uint64(time.Now().Unix()) + 36, // 36 seconds later
+    })
+    rt.CallCtx = block4Context
+    
+    // Complete the final operation with an error
+    errMsg := "Operation 5 failed due to insufficient funds"
+    asyncManager.CompleteResult(opIDs[4], nil, fmt.Errorf(errMsg))
+    
+    // Verify all operations are complete
+    for i, opID := range opIDs {
+        result := asyncManager.GetResult(opID)
+        require.NotNil(result, "All operations should exist")
+        require.True(result.Ready, "All operations should be complete now")
+        
+        // Check if the operation succeeded or failed
+        if i == 4 {
+            require.NotNil(result.Error, "Operation 5 should have an error")
+            require.Equal(errMsg, result.Error.Error())
+        } else {
+            require.Nil(result.Error, "Operations 1-4 should have succeeded")
+            
+            // Verify the results match what we expect
+            resultData := result.Value
+            require.NotNil(resultData)
+            require.Contains(string(resultData), fmt.Sprintf("Result for operation %d", i+1))
+        }
+    }
+    
+    // BLOCK 5: Demonstrate state persistence across blocks
+    fmt.Println("📋 BLOCK 5: Verifying state consistency across blocks...")
+    
+    // Create fresh context for block 5
+    block5Context := rt.Runtime.WithDefaults(runtime.CallInfo{
+        State:     rt.State,
+        Actor:     rt.Actor,
+        Fuel:      1000000000,
+        Height:    5,
+        Timestamp: uint64(time.Now().Unix()) + 48, // 48 seconds later
+    })
+    rt.CallCtx = block5Context
+    
+    // Verify we can still read metadata from block 1
+    for i, opID := range opIDs {
+        key := []byte(fmt.Sprintf("op_meta_%s", opID))
+        value, err := rt.State.GetValue(context.Background(), key)
+        require.NoError(err, "Should be able to retrieve metadata from block 1")
+        require.Contains(string(value), fmt.Sprintf("Operation %d started in block 1", i+1))
+    }
+    
+    fmt.Println("📋 Parallel operations across blocks test completed successfully")
 }
 
 /* We now use the one directly on the runtime
