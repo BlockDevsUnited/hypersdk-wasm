@@ -146,7 +146,20 @@ func (p *ContractInstance) call(ctx context.Context, callInfo *CallInfo) ([]byte
 	if err := contractCtx.customSerialize(paramsBytes); err != nil {
 		return nil, err
 	}
+	
+	// Ensure we have at least some parameters to avoid empty key issues
+	if len(callInfo.Params) == 0 {
+		// Add a placeholder parameter to prevent empty keys in contract storage operations
+		// This will be ignored by the contract if not expected
+		fmt.Println("DEBUG: Adding placeholder parameter to prevent empty key issues")
+		callInfo.Params = []byte{0x01} // Adding a minimal non-empty parameter
+	}
+	
 	paramsBytes.Write(callInfo.Params)
+
+	// Log parameter details for debugging
+	fmt.Printf("DEBUG: Parameter details - context size: %d, params size: %d, total size: %d\n", 
+		paramsBytes.Len()-len(callInfo.Params), len(callInfo.Params), paramsBytes.Len())
 
 	// copy params into store linear memory
 	paramsOffset, err := p.writeToMemory(paramsBytes.Bytes())
@@ -154,24 +167,40 @@ func (p *ContractInstance) call(ctx context.Context, callInfo *CallInfo) ([]byte
 		return nil, err
 	}
 
+	// Enhanced debugging for function name resolution
+	fmt.Printf("DEBUG: Calling function: %s (trying exports with prefixes 'export_' or 'wasm_', or without prefix)\n", callInfo.FunctionName)
+	
 	// WebAssembly exported functions use a prefix
 	wasmFunctionName := "export_" + callInfo.FunctionName
 	function := p.inst.GetFunc(p.store, wasmFunctionName)
 	if function == nil {
-		// Backward compatibility check with old wasm_ prefix if needed
-		wasmFunctionName = "wasm_" + callInfo.FunctionName
-		function = p.inst.GetFunc(p.store, wasmFunctionName)
-		if function == nil {
-			return nil, fmt.Errorf("function %s (wasm export: %s) does not exist", callInfo.FunctionName, "export_"+callInfo.FunctionName)
+		// Try without any prefix - direct export
+		function = p.inst.GetFunc(p.store, callInfo.FunctionName)
+		if function != nil {
+			fmt.Printf("DEBUG: Found direct export for %s (no prefix)\n", callInfo.FunctionName)
+		} else {
+			// Backward compatibility check with old wasm_ prefix if needed
+			wasmFunctionName = "wasm_" + callInfo.FunctionName
+			function = p.inst.GetFunc(p.store, wasmFunctionName)
+			if function == nil {
+				return nil, fmt.Errorf("function %s does not exist (tried prefixes: 'export_', none, 'wasm_')", callInfo.FunctionName)
+			}
+			fmt.Printf("DEBUG: Found wasm_ prefixed export for %s\n", callInfo.FunctionName)
 		}
+	} else {
+		fmt.Printf("DEBUG: Found export_ prefixed export for %s\n", callInfo.FunctionName)
 	}
+	
 	_, err = function.Call(p.store, paramsOffset)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("function call error (%s): %w", callInfo.FunctionName, err)
 	}
 
-	// Add debug logging to print the raw result bytes
-	fmt.Printf("DEBUG: Result bytes (len=%d): %v\n", len(p.result), p.result)
+	// Enhanced debug logging to print the raw result bytes
+	fmt.Printf("DEBUG: Result from %s (len=%d): %v\n", callInfo.FunctionName, len(p.result), p.result)
+	if len(p.result) > 0 {
+		fmt.Printf("DEBUG: First byte (type ID): 0x%02x\n", p.result[0])
+	}
 
 	return p.result, nil
 }
