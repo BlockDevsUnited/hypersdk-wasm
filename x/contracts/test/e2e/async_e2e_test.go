@@ -917,6 +917,115 @@ func TestAsyncParallelOperationsAcrossBlocks(t *testing.T) {
     fmt.Println("📋 Parallel operations across blocks test completed successfully")
 }
 
+// TestAsyncContractDeployment tests contract deployment using the AsyncStateManager
+func TestAsyncContractDeployment(t *testing.T) {
+	// Setup test environment
+	require, rt := setupTestEnvironment(t)
+
+	// Get the async state manager
+	asyncManager := rt.Runtime.GetAsyncStateManager()
+	require.NotNil(asyncManager, "Async state manager should not be nil")
+
+	// 1. TRANSACTION 1: Start async deployment operation
+	fmt.Println("📋 Starting async contract deployment...")
+	result := asyncManager.RegisterResult()
+	require.NotNil(result)
+	
+	// Extract operation ID
+	opID := result.ID
+	require.NotEmpty(opID)
+	fmt.Printf("📋 Received deployment operation ID: %s\n", opID)
+
+	// 2. Compile or load the test contract WASM
+	contractBytes, err := loadContractWASM("call_contract")
+	require.NoError(err, "Failed to load contract WASM")
+	require.NotEmpty(contractBytes, "Contract WASM should not be empty")
+	fmt.Printf("📋 Loaded contract WASM, size: %d bytes\n", len(contractBytes))
+
+	// 3. Generate a contract ID (normally this would be derived from the bytecode)
+	testID := ids.GenerateTestID()
+	contractID := createContractID(testID[:])
+	fmt.Printf("📋 Generated test contract ID: %s\n", contractID)
+
+	// 4. Simulate the deployment process (this would happen in the runtime)
+	go func() {
+		// Simulate processing time
+		time.Sleep(100 * time.Millisecond)
+		
+		// Store the contract bytes in state
+		err := rt.State.SetContractBytes(context.Background(), contractID, contractBytes)
+		if err != nil {
+			// If deployment fails, complete with error
+			asyncManager.CompleteResult(opID, nil, fmt.Errorf("contract deployment failed: %w", err))
+			return
+		}
+
+		// Generate address from contract ID
+		contractAddr := codec.CreateAddress(0, ids.ID(contractID))
+		
+		// Store the contract address mapping
+		err = setupContractForAddress(context.Background(), rt.State, contractAddr, contractID)
+		if err != nil {
+			// If address setup fails, complete with error
+			asyncManager.CompleteResult(opID, nil, fmt.Errorf("contract address setup failed: %w", err))
+			return
+		}
+		
+		// Complete with the new contract address
+		asyncManager.CompleteResult(opID, contractAddr[:], nil)
+		fmt.Println("📋 Async contract deployment completed")
+	}()
+
+	// 5. TRANSACTION 2: Check deployment result in a new simulated transaction
+	fmt.Println("📋 Simulating new transaction to check deployment result...")
+	
+	// Create fresh call context
+	rt.CallCtx = rt.Runtime.WithDefaults(runtime.CallInfo{
+		State: rt.State,
+		Fuel:  1000000000,
+		Height: 2, // New block
+	})
+
+	// Wait for operation completion with timeout
+	var deploymentAddr []byte
+	var deploymentErr error
+	
+	fmt.Println("📋 Waiting for deployment completion...")
+	select {
+	case <-result.CompletionChan:
+		// Check deployment result
+		completedResult := asyncManager.GetResult(opID)
+		require.NotNil(completedResult)
+		require.True(completedResult.Ready)
+		
+		deploymentAddr = completedResult.Value
+		deploymentErr = completedResult.Error
+		
+	case <-time.After(1 * time.Second):
+		require.Fail("Timed out waiting for async deployment completion")
+	}
+
+	// 6. Verify deployment was successful
+	require.NoError(deploymentErr, "Deployment should not return an error")
+	require.NotEmpty(deploymentAddr, "Deployment should return a valid address")
+	
+	// Convert to address type for better verification
+	newContractAddr := into[codec.Address](deploymentAddr)
+	fmt.Printf("📋 Deployed contract at address: %s\n", newContractAddr)
+	
+	// 7. Verify the contract is accessible and has correct bytecode
+	storedContractID, err := rt.GetContract(newContractAddr)
+	require.NoError(err, "Should be able to get contract ID for the deployed address")
+	require.Equal(contractID, storedContractID, "Stored contract ID should match deployed ID")
+	
+	// 8. Verify the contract bytecode is correctly stored
+	storedBytes, err := rt.State.GetContractBytes(context.Background(), contractID)
+	require.NoError(err, "Should be able to retrieve contract bytecode")
+	require.Equal(contractBytes, storedBytes, "Stored bytecode should match deployed bytecode")
+	
+	fmt.Println("📋 Contract deployment verification complete!")
+}
+
 /* We now use the one directly on the runtime
 // GetAsyncStateManager is a helper method for tests
 func (rt *testRuntime) GetAsyncStateManager() *runtime.AsyncStateManager {
