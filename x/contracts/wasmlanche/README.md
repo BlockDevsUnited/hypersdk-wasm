@@ -36,7 +36,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wasmlanche = { git = "https://github.com/rhombus-tech/POC4.git", branch = "main" }
+wasmlanche = { path = "../../wasmlanche", default-features = false }
 borsh = "0.10.0"
 ```
 
