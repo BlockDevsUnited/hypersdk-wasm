@@ -223,20 +223,6 @@ pub async fn safe_operation(ctx: &mut Context) -> AsyncResult<Vec<u8>> {
 }
 ```
 
-## TEE Integration
-
-The SDK supports deployment and execution in Trusted Execution Environments:
-
-```rust
-// Contracts operate identically in TEE environments
-// No special code changes needed
-pub async fn secure_operation(ctx: &mut Context, data: Vec<u8>) -> AsyncResult<Vec<u8>> {
-    // All operations are protected by the TEE
-    let result = process_sensitive_data(data);
-    AsyncResult::with_result(Ok(result))
-}
-```
-
 ## Examples
 
 Browse the `/examples` directory for complete contract examples:
