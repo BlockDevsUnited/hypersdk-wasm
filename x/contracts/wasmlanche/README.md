@@ -1,6 +1,6 @@
 # Wasmlanche Smart Contract SDK
 
-This SDK provides a framework for writing WebAssembly-based smart contracts with asynchronous capabilities for the Hyper blockchain platform.
+This SDK provides a framework for writing WebAssembly-based smart contracts with asynchronous capabilities for the HyperSDK.
 
 ## Core Features
 
