@@ -44,14 +44,14 @@ type AsyncStateManager struct {
 	mu       sync.RWMutex
 	results  map[string]*AsyncResult
 	nextID   uint64
-	registry *AsyncRegistry
+	registry *AsyncCallbackRegistry
 }
 
 // NewAsyncStateManager creates a new AsyncStateManager
 func NewAsyncStateManager() *AsyncStateManager {
 	return &AsyncStateManager{
 		results:  make(map[string]*AsyncResult),
-		registry: &AsyncRegistry{},
+		registry: NewAsyncCallbackRegistry(),
 	}
 }
 

@@ -33,6 +33,12 @@ type WasmRuntime struct {
 	
 	// AsyncStateManager manages async operations across transactions
 	asyncStateManager *AsyncStateManager
+	
+	// TEE-specific fields
+	teeContext *TEEContext    // Context for TEE operations
+	teeEnabled bool          // Whether TEE mode is enabled
+	storeCache sync.Map      // Cache of stores for different threads
+	idMappings sync.Map      // Mappings from numeric IDs to UUIDs for cross-regional verification
 }
 
 type StateManager interface {
