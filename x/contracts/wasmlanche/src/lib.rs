@@ -1,0 +1,144 @@
+// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
+// See the file LICENSE for licensing terms.
+
+#![deny(clippy::pedantic)]
+#![cfg_attr(any(not(feature = "std"), target_arch = "wasm32"), no_std)]
+#![cfg_attr(not(feature = "std"), feature(alloc_error_handler))]
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
+// NOTE: We've removed the global allocator and alloc error handler declarations
+// to avoid conflicts with the std library when using futures_executor or std features.
+// This allows the program to use the allocator provided by the standard library
+// or other dependencies automatically.
+
+// Define a shared key constant used for async operations
+pub const SHARED_KEY: &[u8] = b"shared_value";
+
+pub mod build;
+pub mod context;
+pub mod error;
+pub mod events;
+pub mod future;
+pub mod gas;
+pub mod host;
+pub mod memory;
+#[cfg(feature = "simulator")]
+pub mod simulator;
+pub mod state;
+pub mod types;
+
+pub use crate::{
+    context::Context,
+    error::Error,
+    events::{Event, EventLog},
+    future::{AsyncResult, StateResult, ContractCallResult, UnitResult},
+    gas::GasCounter,
+    host::Host,
+    memory::Memory,
+    state::StateAccess,
+    types::WasmlAddress,
+};
+
+#[cfg(all(feature = "simulator", feature = "std", not(target_arch = "wasm32")))]
+pub use crate::{
+    simulator::Simulator,
+    simulator::SimulatorImpl,
+};
+
+#[cfg(all(feature = "simulator", target_arch = "wasm32"))]
+pub use crate::simulator::SimulatorImpl;
+
+pub const ID_LEN: usize = 32;
+
+/// Welcome to the wasmlanche! This SDK provides a set of tools to help you write
+/// your smart-contracts in Rust to be deployed and run on a `HyperVM`.
+/// 
+/// # Getting Started
+/// 
+/// To get started, create a new Rust project and add the following to your
+/// `Cargo.toml`:
+/// 
+/// ```toml
+/// [dependencies]
+/// wasmlanche = { git = "https://github.com/hyperledger/wasmlanche" }
+/// ```
+/// 
+/// Then, create a new file called `lib.rs` and add the following:
+/// 
+/// ```rust,ignore
+/// use wasmlanche::prelude::*;
+/// 
+/// #[public]
+/// pub fn init(ctx: &mut Context) {
+///     // Your initialization code here
+/// }
+/// 
+/// #[public]
+/// pub fn handle(ctx: &mut Context) {
+///     // Your contract code here
+/// }
+/// ```
+/// 
+/// # Features
+/// 
+/// The wasmlanche SDK provides the following features:
+/// 
+/// - `std` - Enable standard library features
+/// - `no_std` - Disable standard library features
+/// 
+/// By default, the `std` feature is enabled.
+/// 
+/// # Examples
+/// 
+/// For more examples, see the `examples` directory in the repository.
+/// 
+/// # License
+/// 
+/// This project is licensed under the Apache License, Version 2.0.
+/// 
+/// # Contributing
+/// 
+/// We welcome contributions! Please see the `CONTRIBUTING.md` file in the
+/// repository for more information.
+
+/// Re-exports commonly used types and traits.
+pub mod prelude {
+    pub use super::{Context, Error, Event, EventLog, GasCounter};
+    pub use borsh;
+    pub use sdk_macros::public;
+}
+
+// Re-export borsh for use by contracts
+pub use borsh;
+
+pub use bytemuck;
+
+/// Allocates memory in the WebAssembly linear memory.
+/// This function is exported for use by the generated code.
+#[no_mangle]
+pub extern "C" fn allocate(size: u32) -> Option<core::ptr::NonNull<u8>> {
+    // Allocate memory and return a NonNull pointer
+    let host_ptr = crate::memory::alloc(size as usize);
+    
+    // Convert the raw pointer to a NonNull<u8>
+    core::ptr::NonNull::new(host_ptr.as_ptr() as *mut u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    #[tokio::test]
+    async fn test_context() {
+        let mut context = Context::with_actor(WasmlAddress::new([1; 32]));
+        
+        context.store_by_key(b"test", b"test".to_vec()).unwrap();
+        let events = context.get_events();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], Event::StateChange { .. }));
+    }
+}

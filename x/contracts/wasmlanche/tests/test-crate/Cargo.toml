@@ -1,0 +1,23 @@
+[package]
+name = "test-crate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasmlanche = { path = "../../", default-features = false }
+sdk-macros = { path = "../../../sdk-macros" }
+borsh = { version = "0.10.3", default-features = false }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dev-dependencies]
+wasmlanche = { workspace = true, features = ["std", "simulator"] }
+
+[features]
+default = ["std"]
+std = ["wasmlanche/std", "borsh/std"]
+wasm = []
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wee_alloc = "0.4.5"

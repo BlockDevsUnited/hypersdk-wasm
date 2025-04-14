@@ -1,0 +1,15 @@
+// Copyright (C) 2024, Ava Labs, Inc. All rights reserved.
+// See the file LICENSE for licensing terms.
+
+use sdk_macros::public;
+use wasmlanche::Context;
+
+#[public]
+pub fn heavy_task(_ctx: &mut Context) -> i64 {
+    // Simulate resource-intensive work
+    let mut result = 0;
+    for i in 0..10000 {
+        result += i;
+    }
+    result
+}

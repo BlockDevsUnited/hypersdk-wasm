@@ -1,0 +1,30 @@
+[package]
+name = "call_contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasmlanche = { workspace = true, features = ["wasm"] }
+sdk_macros = { package = "sdk-macros", path = "../../../sdk-macros" }
+borsh = { version = "0.10", default-features = false }
+futures = { version = "0.3", default-features = false, features = ["executor", "std"] }
+hex = "0.4.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wee_alloc = "0.4"
+
+[features]
+default = ["wasm"]
+wasm = []
+std = []
+bindings = ["wasmlanche/bindings"]
+test = ["wasmlanche/test"]
+
+[dev-dependencies]
+wasmlanche = { workspace = true, features = ["debug", "test"] }
+
+[build-dependencies]
+wasmlanche-build = { path = "../../../wasmlanche-build" }

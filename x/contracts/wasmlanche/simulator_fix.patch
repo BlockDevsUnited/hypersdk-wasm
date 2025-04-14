@@ -1,0 +1,75 @@
+--- a/src/simulator.rs
++++ b/src/simulator.rs
+@@ -77,14 +77,9 @@
+ 
+ use std::{
+-    borrow::Cow,
+     collections::{HashMap, HashSet},
+-    fmt::Debug,
+-    ops::DerefMut,
+     pin::Pin,
+     sync::{Arc, Weak},
+     future::Future,
+ };
+ 
+@@ -93,15 +88,11 @@
+ use std::sync::Mutex;
+ 
+ use wasmtime::{
+-    AsContextMut, Caller, Engine, Extern, Func, FuncType, Instance, Linker, Memory, Module, Store,
+-    StoreLimits, Val,
++    AsContextMut, Caller, Engine, Linker, Memory, Module, Store, Config
+ };
+ 
+ #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+ use std::{
+-    sync::{atomic::{AtomicU64, Ordering}},
+-    collections::{HashMap, HashSet},
+-    future::Future,
+-    pin::Pin,
+-    sync::{Arc, Mutex, atomic::{AtomicU64, Ordering}},
++    sync::atomic::{AtomicU64, Ordering},
+ };
+ 
+@@ -111,7 +102,6 @@
+ use tokio::sync::RwLock;
+ #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+-use wasmtime::{Engine, Store, Module, Linker, Config, Caller};
+ 
+ use crate::{
+     events::{Event, EventLog},
+@@ -2005,29 +1995,29 @@
+ }
+ 
+-impl<E: WasmEngine> Simulator<E> {
++pub struct SimulatorWrapper {
++    debug_mode: bool,
++    simulator: Arc<SimulatorImpl>,
++}
++
++impl SimulatorWrapper {
+     pub fn new(debug_mode: bool) -> Self {
+         // Create the simulator instance
+         let sim_impl = Arc::new(SimulatorImpl::new());
+         
+-        // Register the simulator in the registry
+-        #[cfg(feature = "std")]
+-        {
+-            let id = Uuid::new_v4();
+-            let mut registry = SIMULATOR_REGISTRY.lock().unwrap();
+-            registry.instances.insert(id, Arc::downgrade(&sim_impl));
+-            registry.current_instance = Some(id);
+-        }
++        #[cfg(feature = "std")]
++        {
++            let id = Uuid::new_v4();
++            let mut registry = SIMULATOR_REGISTRY.lock().unwrap();
++            registry.instances.insert(id, Arc::downgrade(&sim_impl));
++            registry.current_instance = Some(id);
++        }
+         
+         Self {
+             debug_mode,
+             simulator: sim_impl,
+         }
+     }

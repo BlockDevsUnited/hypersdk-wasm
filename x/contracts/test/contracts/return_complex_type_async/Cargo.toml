@@ -1,0 +1,26 @@
+[package]
+name = "return_complex_type_async"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+sdk-macros = { path = "../../../sdk-macros" }
+wasmlanche = { path = "../../../wasmlanche" }
+borsh = "0.9.0"
+
+[build-dependencies]
+wasmlanche-build = { path = "../../../wasmlanche-build" }
+
+# Set lower optimization levels to improve compilation speed
+[profile.release]
+opt-level = 1
+lto = false
+debug = false
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true

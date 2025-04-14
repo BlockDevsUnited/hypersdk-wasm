@@ -1,0 +1,24 @@
+[package]
+name = "async_producer_fixed"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+bindings = ["wasmlanche/bindings"]
+test = ["wasmlanche/test", "wasmlanche/simulator"]
+simulator = ["wasmlanche/simulator"]
+default = ["simulator"]
+
+[dependencies]
+wasmlanche = { workspace = true, default-features = false, features = ["debug"] }
+borsh = { version = "0.10", default-features = false }
+sdk-macros = { path = "../../../sdk-macros" }
+
+[dev-dependencies]
+wasmlanche = { workspace = true, features = ["debug", "test", "simulator"] }
+
+[build-dependencies]
+wasmlanche-build = { path = "../../../wasmlanche-build" }

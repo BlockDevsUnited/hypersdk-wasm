@@ -1,0 +1,61 @@
+[package]
+name = "wasmlanche"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+borsh = { version = "0.10.3", default-features = false }
+bytemuck = { version = "1.17.0", features = ["derive"] }
+cfg-if = "1.0.0"
+displaydoc = { version = "0.2.5", default-features = false }
+hashbrown = "0.14.5"
+hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
+pin-project = "1.1.5"
+sdk-macros = { path = "../sdk-macros" }
+spin = { version = "0.9.8", default-features = false, features = ["rwlock", "mutex", "spin_mutex"] }
+simulator = { path = "../simulator", optional = true }
+thiserror = { version = "1.0.56", optional = true }
+async-trait = { version = "0.1", optional = true }
+uuid = "0.8.2"
+lazy_static = "1.4.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wasmtime = { version = "25.0.3", default-features = false, features = ["async", "cranelift"] }
+tokio = { version = "1.36.0", features = ["rt", "macros", "sync"] }
+parking_lot = "0.12.1"
+futures = { version = "0.3.30", default-features = false, features = ["executor"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wee_alloc = "0.4"
+getrandom = { version = "0.2", features = ["js"] }
+
+[features]
+default = ["std", "simulator"]
+std = [
+    "hex/std",
+    "spin/std",
+    "borsh/std",
+    "thiserror",
+    "async-trait"
+]
+simulator = ["dep:simulator", "std"]
+wasm = []
+test = ["std", "simulator"]
+build = ["std"]
+bindings = []  # No longer tied to std
+debug = []
+futures_executor = []
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full", "test-util"] }
+test-log = "0.2.14"
+test-crate = { path = "tests/test-crate" }
+criterion = "0.5"
+
+[[bench]]
+name = "call_contract_time"
+harness = false
+
+[[bench]]
+name = "call_contract_mem"
+harness = false
