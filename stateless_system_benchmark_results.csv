@@ -1,0 +1,4 @@
+BatchSize,ThreadCount,StateContention,TPS,LatencyP50,LatencyP95,LatencyP99,TotalTransactions,NetworkLatencyMs,WitnessValidationMs,CryptoVerificationMs,TEEProcessingMs
+100,8,0.00,998.88,23.43375ms,25.824834ms,33.905792ms,1000,5,2,1,10
+100,8,0.50,825.31,28.545667ms,30.807791ms,35.072583ms,1000,5,2,1,10
+100,8,0.25,825.28,28.484834ms,30.574833ms,31.233542ms,1000,5,2,1,10
