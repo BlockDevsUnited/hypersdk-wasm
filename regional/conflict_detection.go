@@ -173,11 +173,16 @@ func (cd *ConflictDetector) ResolveConflicts(conflicts map[string]ConflictMetada
 			}
 			
 		case TimestampConflict:
-			// In timestamp conflicts, newer timestamp wins
-			if metadata.LocalTimestamp.After(metadata.RemoteTimestamp) {
+			if cd.config.LocalPriority {
+				// If LocalPriority is true, local operations win regardless of timestamp
 				resolution = LocalWins
 			} else {
-				resolution = CrossRegionWins
+				// Otherwise, newer timestamp wins
+				if metadata.LocalTimestamp.After(metadata.RemoteTimestamp) {
+					resolution = LocalWins
+				} else {
+					resolution = CrossRegionWins
+				}
 			}
 			
 		case RegulatoryConflict:

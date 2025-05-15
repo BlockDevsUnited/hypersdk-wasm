@@ -41,10 +41,13 @@ type CrossRegionConfig struct {
 	SyncInterval time.Duration
 	
 	// VerificationMode determines how cross-region operations are verified
-	VerificationMode VerificationMode
+	VerificationMode CrossRegionVerificationMode
 	
 	// StateRetentionLimit is the number of state versions to retain per region
 	StateRetentionLimit int
+	
+	// ConflictDetectionConfig is the configuration for conflict detection
+	ConflictDetection *ConflictDetectionConfig
 }
 
 // CrossRegionOperation represents an operation involving multiple regions
@@ -58,6 +61,16 @@ type CrossRegionOperation struct {
 	TxIDs         []ids.ID
 	Proof         []byte
 }
+
+// CrossRegionVerificationMode defines how cross-region operations are verified
+type CrossRegionVerificationMode int
+
+// Cross-region verification modes
+const (
+	VerifyTEE CrossRegionVerificationMode = iota
+	VerifyConsensus
+	VerifyZKProof
+)
 
 // CrossRegionOpType defines the type of cross-region operation
 type CrossRegionOpType int
@@ -100,16 +113,26 @@ type AttestationVerifier struct {
 
 // NewCrossRegionCoordinator creates a new cross-region coordinator
 func NewCrossRegionCoordinator(logger *zap.Logger, mesh interface{}) *CrossRegionCoordinator {
-	coordinator := &CrossRegionCoordinator{
+	config := &CrossRegionConfig{
+		MaxConcurrentSync:   10,
+		SyncInterval:        time.Second * 30,
+		VerificationMode:    VerifyTEE,
+		StateRetentionLimit: 100,
+		ConflictDetection:   DefaultConflictDetectionConfig(),
+	}
+
+	coord := &CrossRegionCoordinator{
 		regionStates:      make(map[string]*RegionalStateVersion),
-		mesh:              mesh,
+		mesh:             mesh,
 		lastUpdateTimes:   make(map[string]time.Time),
 		pendingOperations: make(map[ids.ID]*CrossRegionOperation),
-		lock:              sync.RWMutex{},
-		logger:            logger,
+		logger:           logger,
+		config:           config,
+		operationQueue:    make(chan *CrossRegionOperation, 1000),
+		shutdownCh:        make(chan struct{}),
 	}
-	
-	return coordinator
+
+	return coord
 }
 
 // Shutdown stops the coordinator
@@ -270,7 +293,7 @@ func (c *CrossRegionCoordinator) processOperation(ctx context.Context, op *Cross
 // processStateSync processes a state sync operation
 func (c *CrossRegionCoordinator) processStateSync(ctx context.Context, op *CrossRegionOperation) error {
 	// Verify operation using TEE attestation if configured
-	if c.config.VerificationMode == TEEAttestationOnly || c.config.VerificationMode == WithConsensusValidation {
+	if c.config.VerificationMode == VerifyTEE || c.config.VerificationMode == VerifyConsensus {
 		if err := c.verifyOperation(ctx, op); err != nil {
 			return fmt.Errorf("operation verification failed: %w", err)
 		}
@@ -313,14 +336,14 @@ func (c *CrossRegionCoordinator) processRegulatoryCommunication(ctx context.Cont
 func (c *CrossRegionCoordinator) verifyOperation(ctx context.Context, op *CrossRegionOperation) error {
 	// Verify operation based on verification mode
 	switch c.config.VerificationMode {
-	case TEEAttestationOnly:
+	case VerifyTEE:
 		return c.verifyWithTEEAttestation(ctx, op)
-	case WithConsensusValidation:
+	case VerifyConsensus:
 		if err := c.verifyWithTEEAttestation(ctx, op); err != nil {
 			return err
 		}
 		return c.verifyWithConsensus(ctx, op)
-	case WithZKProofs:
+	case VerifyZKProof:
 		return c.verifyWithZKProofs(ctx, op)
 	default:
 		return fmt.Errorf("unknown verification mode: %d", c.config.VerificationMode)
@@ -341,7 +364,8 @@ func (c *CrossRegionCoordinator) verifyWithConsensus(ctx context.Context, op *Cr
 
 // verifyWithZKProofs verifies an operation using zero-knowledge proofs
 func (c *CrossRegionCoordinator) verifyWithZKProofs(ctx context.Context, op *CrossRegionOperation) error {
-	// Implement ZK proof verification
+	// TODO: Implement ZK proof verification
+	c.logger.Debug("ZK proof verification not yet implemented")
 	return nil
 }
 
